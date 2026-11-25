@@ -387,12 +387,27 @@
       return html`<span class="inline-status"><span class="spin"></span>${label} ${seconds}s</span>`;
     }
 
-    function Card({ node, isTarget, isDragging, pendingSince, pollError, retry, move, onHeight, onContinue, onBranch, onRetry, onDragStart, onDragMove, onDragEnd, onSaveRetry }) {
+    function Card({ node, liveText, isTarget, isDragging, pendingSince, pollError, retry, move, onHeight, onContinue, onBranch, onRetry, onDragStart, onDragMove, onDragEnd, onSaveRetry }) {
       const ref = useRef(null);
-      const replyHtml = useMemo(
-        () => (node.status === 'done' && node.reply ? renderMarkdown(node.reply) : ''),
-        [node.status, node.reply]
-      );
+      const bodyRef = useRef(null);
+      const stickToBottom = useRef(true);
+
+      // While the AI is writing, show the text so far: live from the stream,
+      // or the partial reply saved in the database when polling instead.
+      const text = node.status === 'done' ? node.reply
+        : node.status === 'pending' ? (liveText || node.reply || '')
+        : '';
+      const replyHtml = useMemo(() => (text ? renderMarkdown(text) : ''), [text]);
+
+      // Follow the text as it arrives, unless the reader has scrolled up.
+      useLayoutEffect(() => {
+        const el = bodyRef.current;
+        if (el && node.status === 'pending' && stickToBottom.current) el.scrollTop = el.scrollHeight;
+      }, [replyHtml, node.status]);
+      const onBodyScroll = (e) => {
+        const el = e.currentTarget;
+        stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+      };
 
       // Report the card's real height so edges can start at its bottom-centre.
       useLayoutEffect(() => {
@@ -409,7 +424,12 @@
       let actions = null;
 
       if (node.status === 'pending') {
-        body = html`<div class="card-body muted"><${Spinner} label="Thinking…" since=${pendingSince} /></div>`;
+        if (text) {
+          body = html`<div class="card-body md scroll" ref=${bodyRef} onScroll=${onBodyScroll} onClick=${onMarkdownClick} dangerouslySetInnerHTML=${{ __html: replyHtml }}></div>`;
+          actions = html`<div class="card-actions"><${Spinner} label="Writing…" since=${pendingSince} /></div>`;
+        } else {
+          body = html`<div class="card-body muted"><${Spinner} label="Thinking…" since=${pendingSince} /></div>`;
+        }
         if (pollError) {
           note = html`<div class="card-note soft">Could not check for the reply (${pollError}) Trying again every few seconds.</div>`;
         }
@@ -583,6 +603,8 @@
       const [pollErrors, setPollErrors] = useState({}); // node id -> message
       const [moves, setMoves] = useState({});           // node id -> { busy, error, x, y } while a position is being saved
       const [draggingId, setDraggingId] = useState(null);
+      const [liveText, setLiveText] = useState({});     // node id -> reply text received over the stream so far
+      const [streamTick, setStreamTick] = useState(0);  // bumped when a node drops from streaming to polling
 
       const viewportRef = useRef(null);
       const loadSeq = useRef(0);
@@ -590,6 +612,10 @@
       const composerSeq = useRef(0);
       const pendingSince = useRef({}); // node id -> ms timestamp the wait started, as seen by this browser
       const polling = useRef(new Set());
+      const sources = useRef(new Map());   // node id -> open EventSource
+      const noStream = useRef(new Set());  // node ids whose stream failed; these are polled instead
+      const liveBuffer = useRef({});       // node id -> text, flushed to state a few times a second
+      const flushTimer = useRef(null);
       const viewRef = useRef(view);
       viewRef.current = view;
       const nodesRef = useRef(doc.nodes);
@@ -617,6 +643,9 @@
         setRetries({});
         setPollErrors({});
         setMoves({});
+        setLiveText({});
+        liveBuffer.current = {};
+        noStream.current = new Set();
         try {
           const data = await api('/api/canvases/' + id);
           if (seq !== loadSeq.current) return; // a newer load has started
@@ -846,8 +875,6 @@
         }
       };
 
-      // -- Pending nodes: poll until done or error ---------------------------
-
       const replaceNode = useCallback((fresh) => {
         setDoc((d) => (d.canvas && d.canvas.id === fresh.canvas_id
           // Keep the position shown here: the node may have been dragged since.
@@ -855,18 +882,90 @@
           : d));
       }, []);
 
+      // -- Pending nodes: stream the reply as it is written -------------------
+
+      const dropLive = useCallback((id) => {
+        delete liveBuffer.current[id];
+        setLiveText((l) => { if (!(id in l)) return l; const { [id]: _, ...rest } = l; return rest; });
+      }, []);
+
+      const openStream = useCallback((id) => {
+        const es = new EventSource('/api/nodes/' + id + '/stream');
+        sources.current.set(id, es);
+
+        // Deltas arrive many times a second; update the screen at most ~12 times a second.
+        const scheduleFlush = () => {
+          if (flushTimer.current) return;
+          flushTimer.current = setTimeout(() => {
+            flushTimer.current = null;
+            setLiveText((l) => ({ ...l, ...liveBuffer.current }));
+          }, 80);
+        };
+        const close = () => {
+          es.close();
+          if (sources.current.get(id) === es) sources.current.delete(id);
+        };
+        // Anything wrong with the stream: stop using it for this node and poll instead.
+        const toPolling = () => {
+          close();
+          noStream.current.add(id);
+          setStreamTick((t) => t + 1);
+        };
+        const finish = (e) => {
+          close();
+          let node;
+          try { node = JSON.parse(e.data); } catch { return toPolling(); }
+          delete pendingSince.current[id];
+          replaceNode(node);
+          dropLive(id);
+        };
+
+        es.addEventListener('snapshot', (e) => { liveBuffer.current[id] = JSON.parse(e.data).text; scheduleFlush(); });
+        es.addEventListener('delta', (e) => { liveBuffer.current[id] = (liveBuffer.current[id] || '') + JSON.parse(e.data).text; scheduleFlush(); });
+        es.addEventListener('done', finish);
+        es.addEventListener('failed', finish);
+        es.addEventListener('gone', toPolling);
+        es.onerror = toPolling; // connection failed or dropped; EventSource would retry, polling is simpler
+      }, [replaceNode, dropLive]);
+
+      // Keep exactly one stream open per pending node (unless it fell back to polling).
+      const pendingIds = doc.status === 'ready'
+        ? doc.nodes.filter((n) => n.status === 'pending').map((n) => n.id).join(',')
+        : '';
+      useEffect(() => {
+        const wanted = new Set(pendingIds ? pendingIds.split(',') : []);
+        for (const [id, es] of sources.current) {
+          if (!wanted.has(id)) { es.close(); sources.current.delete(id); }
+        }
+        for (const id of wanted) {
+          if (!sources.current.has(id) && !noStream.current.has(id)) openStream(id);
+        }
+      }, [pendingIds, streamTick, openStream]);
+      useEffect(() => () => {
+        for (const es of sources.current.values()) es.close();
+        sources.current.clear();
+        clearTimeout(flushTimer.current);
+      }, []);
+
+      // -- Fallback: poll pending nodes that have no working stream ----------
+
       const hasPending = doc.status === 'ready' && doc.nodes.some((n) => n.status === 'pending');
       useEffect(() => {
         if (!hasPending) return;
         const tick = () => {
           for (const n of nodesRef.current) {
-            if (n.status !== 'pending' || polling.current.has(n.id)) continue;
+            if (n.status !== 'pending' || sources.current.has(n.id) || polling.current.has(n.id)) continue;
             polling.current.add(n.id);
             api('/api/nodes/' + n.id)
               .then((fresh) => {
                 setPollErrors((p) => { if (!(n.id in p)) return p; const { [n.id]: _, ...rest } = p; return rest; });
                 if (fresh.status !== 'pending') {
                   delete pendingSince.current[n.id];
+                  replaceNode(fresh);
+                  dropLive(n.id);
+                } else if (fresh.reply !== n.reply) {
+                  // Still writing: show the partial reply saved so far.
+                  dropLive(n.id);
                   replaceNode(fresh);
                 }
               })
@@ -876,7 +975,7 @@
         };
         const t = setInterval(tick, POLL_MS);
         return () => clearInterval(t);
-      }, [hasPending, replaceNode]);
+      }, [hasPending, replaceNode, dropLive]);
 
       // -- Error nodes: retry -------------------------------------------------
 
@@ -885,6 +984,8 @@
         try {
           const fresh = await api(`/api/nodes/${node.id}/retry`, { method: 'POST' });
           pendingSince.current[node.id] = Date.now();
+          noStream.current.delete(node.id); // give streaming another try
+          dropLive(node.id);
           replaceNode(fresh);
           setRetries((r) => { const { [node.id]: _, ...rest } = r; return rest; });
         } catch (err) {
@@ -1038,6 +1139,7 @@
               <${Card}
                 key=${n.id}
                 node=${n}
+                liveText=${liveText[n.id]}
                 isTarget=${!!composer && composer.parentId === n.id}
                 pendingSince=${n.status === 'pending' ? (pendingSince.current[n.id] || Date.parse(n.updated_at)) : null}
                 pollError=${pollErrors[n.id]}

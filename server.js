@@ -167,24 +167,89 @@ function describeAiError(err) {
   if (err instanceof Anthropic.APIError) {
     // Prefer the API's own message over the SDK's "404 {json}" string.
     const detail = (err.error && err.error.error && err.error.error.message) || err.message;
-    return `AI request failed (${err.status}): ${detail}`;
+    // Errors that arrive in the middle of a stream carry no HTTP status.
+    return err.status ? `AI request failed (${err.status}): ${detail}` : `AI request failed: ${detail}`;
   }
   return err && err.message ? err.message : String(err);
 }
 
-// Answer one pending node. Never throws: the outcome is written to the row.
+// --- Live streams ----------------------------------------------------------
+// While a node is being answered, its text so far and the connected
+// Server-Sent Events clients live here, in memory. The database gets the
+// growing reply at most once per second, so a reload, a second tab or the
+// polling fallback can always show the partial reply.
+
+const SAVE_INTERVAL_MS = 1000;
+const liveStreams = new Map(); // node id -> { text, clients: Set<res> }
+
+function sseSend(res, event, data) {
+  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+function startLive(nodeId) {
+  let live = liveStreams.get(nodeId);
+  if (!live) {
+    live = { text: '', clients: new Set() };
+    liveStreams.set(nodeId, live);
+  }
+  return live;
+}
+
+// Tell every connected client how it ended, then close their connections.
+function endLive(nodeId, event, payload) {
+  const live = liveStreams.get(nodeId);
+  if (!live) return;
+  liveStreams.delete(nodeId);
+  for (const res of live.clients) {
+    try {
+      sseSend(res, event, payload);
+      res.end();
+    } catch { /* client already gone */ }
+  }
+}
+
+// Answer one pending node, streaming the reply. Never throws: the outcome is
+// written to the row and sent to any connected stream clients.
 async function answerNode(nodeId) {
+  const live = startLive(nodeId);
+  let lastSaved = Date.now();
+  let saving = false;
+
+  // Save the growing reply, at most once per second and never two at a time.
+  // The status check means a late partial save can never overwrite the final reply.
+  const savePartial = () => {
+    if (saving || Date.now() - lastSaved < SAVE_INTERVAL_MS) return;
+    saving = true;
+    pool
+      // updated_at is left alone: it marks when the wait started, which the page uses for elapsed time.
+      .query(`UPDATE nodes SET reply = $2 WHERE id = $1 AND status = 'pending'`, [nodeId, live.text])
+      .catch((err) => console.error(`[ai] could not save partial reply for node ${nodeId}: ${err.message}`))
+      .finally(() => { saving = false; lastSaved = Date.now(); });
+  };
+
   try {
     const pathRows = await loadPath(nodeId);
-    if (pathRows.length === 0) return; // node was deleted meanwhile
+    if (pathRows.length === 0) { // node was deleted meanwhile
+      endLive(nodeId, 'gone', {});
+      return;
+    }
     const messages = pathToMessages(pathRows);
 
-    const response = await getAnthropic().messages.create({
+    const stream = getAnthropic().messages.stream({
       model: ASK_MODEL,
       max_tokens: MAX_TOKENS,
       system: SYSTEM_PROMPT,
       messages,
     });
+
+    for await (const event of stream) {
+      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+        live.text += event.delta.text;
+        for (const res of live.clients) sseSend(res, 'delta', { text: event.delta.text });
+        savePartial();
+      }
+    }
+    const response = await stream.finalMessage();
 
     let reply = response.content
       .filter((block) => block.type === 'text')
@@ -206,24 +271,31 @@ async function answerNode(nodeId) {
       reply += '\n\n[Reply cut off at the length limit.]';
     }
 
-    await pool.query(
+    const { rows } = await pool.query(
       `UPDATE nodes
           SET status = 'done', reply = $2, model = $3, error = NULL, updated_at = now()
-        WHERE id = $1 AND status = 'pending'`,
+        WHERE id = $1 AND status = 'pending'
+        RETURNING *`,
       [nodeId, reply, response.model || ASK_MODEL]
     );
+    if (rows.length > 0) endLive(nodeId, 'done', rows[0]);
+    else endLive(nodeId, 'gone', {});
   } catch (err) {
     const message = describeAiError(err);
     console.error(`[ai] node ${nodeId} failed: ${message}`);
     try {
-      await pool.query(
+      const { rows } = await pool.query(
         `UPDATE nodes
             SET status = 'error', error = $2, updated_at = now()
-          WHERE id = $1 AND status = 'pending'`,
+          WHERE id = $1 AND status = 'pending'
+          RETURNING *`,
         [nodeId, message]
       );
+      if (rows.length > 0) endLive(nodeId, 'failed', rows[0]);
+      else endLive(nodeId, 'gone', {});
     } catch (dbErr) {
       console.error(`[ai] could not record the error for node ${nodeId}: ${dbErr.message}`);
+      endLive(nodeId, 'gone', {}); // clients fall back to polling
     }
   }
 }
@@ -388,6 +460,7 @@ app.post('/api/canvases/:id/nodes', async (req, res) => {
   );
 
   // Return the pending node immediately; the AI call runs in the background.
+  startLive(rows[0].id);
   res.status(201).json(rows[0]);
   answerNode(rows[0].id);
 });
@@ -397,6 +470,50 @@ app.get('/api/nodes/:id', async (req, res) => {
   const { rows } = await pool.query('SELECT * FROM nodes WHERE id = $1', [id]);
   if (rows.length === 0) throw new HttpError(404, 'Node not found.');
   res.json(rows[0]);
+});
+
+// Server-Sent Events for one node. Events:
+//   snapshot { text }  the reply so far, sent once on connect
+//   delta    { text }  the next piece of text
+//   done     node      finished; the connection then closes
+//   failed   node      the AI call failed; the connection then closes
+//   gone     {}        nothing to stream here; the client should poll instead
+app.get('/api/nodes/:id/stream', async (req, res) => {
+  const id = requireUuid(req.params.id, 'Node id');
+
+  const open = () => {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+  };
+
+  // Checked before any await, so nothing can be missed between the snapshot
+  // and the first delta.
+  const live = liveStreams.get(id);
+  if (live) {
+    open();
+    sseSend(res, 'snapshot', { text: live.text });
+    live.clients.add(res);
+    // Comment lines keep proxies from closing a quiet connection.
+    const heartbeat = setInterval(() => res.write(': keep-alive\n\n'), 15000);
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      live.clients.delete(res);
+    });
+    return;
+  }
+
+  const { rows } = await pool.query('SELECT * FROM nodes WHERE id = $1', [id]);
+  if (rows.length === 0) throw new HttpError(404, 'Node not found.');
+  open();
+  const node = rows[0];
+  if (node.status === 'done') sseSend(res, 'done', node);
+  else if (node.status === 'error') sseSend(res, 'failed', node);
+  else sseSend(res, 'gone', {});
+  res.end();
 });
 
 app.patch('/api/nodes/:id', async (req, res) => {
@@ -418,7 +535,7 @@ app.post('/api/nodes/:id/retry', async (req, res) => {
   // so two simultaneous retries cannot both start an AI call.
   const { rows } = await pool.query(
     `UPDATE nodes
-        SET status = 'pending', error = NULL, updated_at = now()
+        SET status = 'pending', error = NULL, reply = NULL, updated_at = now()
       WHERE id = $1 AND status = 'error'
       RETURNING *`,
     [id]
@@ -428,6 +545,7 @@ app.post('/api/nodes/:id/retry', async (req, res) => {
     if (existing.rowCount === 0) throw new HttpError(404, 'Node not found.');
     throw new HttpError(409, `Only an error node can be retried (status: ${existing.rows[0].status}).`);
   }
+  startLive(id);
   res.json(rows[0]);
   answerNode(id);
 });
