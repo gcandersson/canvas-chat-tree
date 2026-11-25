@@ -13,6 +13,8 @@ const DATABASE_URL = process.env.DATABASE_URL || '';
 
 const MAX_TOKENS = 8192;
 const MAX_PROMPT_CHARS = 20000;
+const MAX_STICKY_CHARS = 10000;
+const STICKY_COLORS = ['yellow', 'green', 'blue', 'pink', 'purple'];
 const SYSTEM_PROMPT =
   'The user is exploring ideas on a branching canvas, where each exchange is a node and any node ' +
   'can be branched in a new direction. You see only the path of exchanges leading to the current ' +
@@ -56,6 +58,25 @@ const SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS nodes_canvas_id_idx ON nodes(canvas_id);
   CREATE INDEX IF NOT EXISTS nodes_parent_id_idx ON nodes(parent_id);
+
+  -- Sticky notes. node_id null = free-floating: x and y are canvas coordinates.
+  -- node_id set = attached: x and y are the offset from that node's top-left
+  -- corner, so the sticky follows its card without any extra saves.
+  CREATE TABLE IF NOT EXISTS stickies (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    canvas_id uuid NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+    node_id uuid NULL REFERENCES nodes(id) ON DELETE SET NULL,
+    x real NOT NULL DEFAULT 0,
+    y real NOT NULL DEFAULT 0,
+    color text NOT NULL DEFAULT 'yellow',
+    content text NOT NULL DEFAULT '',
+    in_context boolean NOT NULL DEFAULT false,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  );
+
+  CREATE INDEX IF NOT EXISTS stickies_canvas_id_idx ON stickies(canvas_id);
+  CREATE INDEX IF NOT EXISTS stickies_node_id_idx ON stickies(node_id);
 `;
 
 let schemaReady = false;
@@ -86,7 +107,7 @@ async function ensureSchema(attempt = 1) {
     }
 
     schemaReady = true;
-    console.log('[db] schema ready (canvases, nodes).');
+    console.log('[db] schema ready (canvases, nodes, stickies).');
   } catch (err) {
     const delayMs = Math.min(30000, 1000 * 2 ** Math.min(attempt, 5));
     console.error(`[db] schema creation failed (attempt ${attempt}): ${err.message}. Retrying in ${delayMs / 1000}s.`);
@@ -411,11 +432,11 @@ app.get('/api/canvases/:id', async (req, res) => {
   const id = requireUuid(req.params.id, 'Canvas id');
   const canvas = await pool.query('SELECT id, title, created_at FROM canvases WHERE id = $1', [id]);
   if (canvas.rowCount === 0) throw new HttpError(404, 'Canvas not found.');
-  const nodes = await pool.query(
-    'SELECT * FROM nodes WHERE canvas_id = $1 ORDER BY created_at ASC, id ASC',
-    [id]
-  );
-  res.json({ canvas: canvas.rows[0], nodes: nodes.rows });
+  const [nodes, stickies] = await Promise.all([
+    pool.query('SELECT * FROM nodes WHERE canvas_id = $1 ORDER BY created_at ASC, id ASC', [id]),
+    pool.query('SELECT * FROM stickies WHERE canvas_id = $1 ORDER BY created_at ASC, id ASC', [id]),
+  ]);
+  res.json({ canvas: canvas.rows[0], nodes: nodes.rows, stickies: stickies.rows });
 });
 
 // --- Nodes -----------------------------------------------------------------
@@ -548,6 +569,95 @@ app.post('/api/nodes/:id/retry', async (req, res) => {
   startLive(id);
   res.json(rows[0]);
   answerNode(id);
+});
+
+// --- Stickies --------------------------------------------------------------
+
+function readStickyColor(value) {
+  if (typeof value !== 'string' || !STICKY_COLORS.includes(value)) {
+    throw new HttpError(400, `color must be one of: ${STICKY_COLORS.join(', ')}.`);
+  }
+  return value;
+}
+
+function readStickyContent(value) {
+  if (typeof value !== 'string') throw new HttpError(400, 'content must be a string.');
+  if (value.length > MAX_STICKY_CHARS) {
+    throw new HttpError(400, `content is too long (max ${MAX_STICKY_CHARS} characters).`);
+  }
+  return value;
+}
+
+// A sticky can only be attached to a node on its own canvas.
+async function requireNodeOnCanvas(nodeId, canvasId) {
+  const node = await pool.query('SELECT canvas_id FROM nodes WHERE id = $1', [nodeId]);
+  if (node.rowCount === 0 || node.rows[0].canvas_id !== canvasId) {
+    throw new HttpError(400, 'node_id does not refer to a node on this canvas.');
+  }
+}
+
+app.post('/api/canvases/:id/stickies', async (req, res) => {
+  const canvasId = requireUuid(req.params.id, 'Canvas id');
+  const body = req.body || {};
+  const x = readCoord(body.x, 'x', { required: false });
+  const y = readCoord(body.y, 'y', { required: false });
+  const color = body.color === undefined ? 'yellow' : readStickyColor(body.color);
+  const content = body.content === undefined ? '' : readStickyContent(body.content);
+  const nodeId = body.node_id === undefined || body.node_id === null ? null : requireUuid(body.node_id, 'node_id');
+
+  const canvas = await pool.query('SELECT id FROM canvases WHERE id = $1', [canvasId]);
+  if (canvas.rowCount === 0) throw new HttpError(404, 'Canvas not found.');
+  if (nodeId) await requireNodeOnCanvas(nodeId, canvasId);
+
+  const { rows } = await pool.query(
+    `INSERT INTO stickies (canvas_id, node_id, x, y, color, content)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING *`,
+    [canvasId, nodeId, x, y, color, content]
+  );
+  res.status(201).json(rows[0]);
+});
+
+// Partial update: only the fields present in the body change.
+app.patch('/api/stickies/:id', async (req, res) => {
+  const id = requireUuid(req.params.id, 'Sticky id');
+  const body = req.body || {};
+
+  const existing = await pool.query('SELECT canvas_id FROM stickies WHERE id = $1', [id]);
+  if (existing.rowCount === 0) throw new HttpError(404, 'Sticky not found.');
+
+  const sets = [];
+  const values = [id];
+  const set = (column, value) => { values.push(value); sets.push(`${column} = $${values.length}`); };
+
+  if (body.content !== undefined) set('content', readStickyContent(body.content));
+  if (body.color !== undefined) set('color', readStickyColor(body.color));
+  if (body.x !== undefined) set('x', readCoord(body.x, 'x', { required: true }));
+  if (body.y !== undefined) set('y', readCoord(body.y, 'y', { required: true }));
+  if (body.in_context !== undefined) {
+    if (typeof body.in_context !== 'boolean') throw new HttpError(400, 'in_context must be true or false.');
+    set('in_context', body.in_context);
+  }
+  if (body.node_id !== undefined) {
+    const nodeId = body.node_id === null ? null : requireUuid(body.node_id, 'node_id');
+    if (nodeId) await requireNodeOnCanvas(nodeId, existing.rows[0].canvas_id);
+    set('node_id', nodeId);
+  }
+  if (sets.length === 0) throw new HttpError(400, 'Nothing to update.');
+
+  const { rows } = await pool.query(
+    `UPDATE stickies SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 RETURNING *`,
+    values
+  );
+  if (rows.length === 0) throw new HttpError(404, 'Sticky not found.');
+  res.json(rows[0]);
+});
+
+app.delete('/api/stickies/:id', async (req, res) => {
+  const id = requireUuid(req.params.id, 'Sticky id');
+  const { rowCount } = await pool.query('DELETE FROM stickies WHERE id = $1', [id]);
+  if (rowCount === 0) throw new HttpError(404, 'Sticky not found.');
+  res.json({ ok: true, id });
 });
 
 // --- Fallbacks -------------------------------------------------------------

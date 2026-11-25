@@ -85,7 +85,7 @@
     .inline-status.bad { color: var(--error); min-width: 0; }
     .clip { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
     .zoom, .topbar button, .topbar select { flex: none; }
-    @media (max-width: 860px) { .brand, .title { display: none; } }
+    @media (max-width: 1100px) { .brand, .title { display: none; } }
 
     /* Viewport and world */
     .viewport {
@@ -211,8 +211,96 @@
       border-top: 1px solid var(--border);
     }
     .card-actions button { height: 28px; padding: 2px 10px; font-size: 13px; }
-    .card-actions .push { margin-left: auto; }
+    .card-actions .push { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; }
+    .card-actions .icon { width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
     .scroll { scrollbar-width: thin; scrollbar-color: #3b4252 transparent; }
+
+    /* Sticky notes */
+    .sticky {
+      --s-bg: #453f22;
+      --s-line: #9a8840;
+      position: absolute;
+      width: 200px;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      color: #eceef2;
+      background: var(--s-bg);
+      border: 1px solid var(--s-line);
+      border-radius: 6px;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+      cursor: grab;
+      touch-action: none;
+    }
+    .sticky.c-green { --s-bg: #24402f; --s-line: #4f8f68; }
+    .sticky.c-blue { --s-bg: #23364f; --s-line: #5380b5; }
+    .sticky.c-pink { --s-bg: #4a2a3c; --s-line: #a8648a; }
+    .sticky.c-purple { --s-bg: #38294f; --s-line: #8263b8; }
+    .sticky.dragging { cursor: grabbing; z-index: 3; box-shadow: 0 12px 28px rgba(0, 0, 0, 0.6); }
+    .sticky-text {
+      min-height: 72px;
+      max-height: 240px;
+      overflow-y: auto;
+      padding: 10px 10px 6px;
+      font-size: 13px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .sticky-text.empty { color: rgba(236, 238, 242, 0.5); font-style: italic; }
+    textarea.sticky-text {
+      display: block;
+      width: 100%;
+      height: 130px;
+      resize: none;
+      border: 0;
+      outline: 0;
+      border-radius: 5px 5px 0 0;
+      background: rgba(0, 0, 0, 0.2);
+      color: inherit;
+      font-family: inherit;
+      cursor: text;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+    .sticky-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 30px;
+      padding: 4px 8px 6px;
+      font-size: 11px;
+      color: rgba(236, 238, 242, 0.75);
+      cursor: default;
+    }
+    .sticky-bar .dot {
+      flex: none;
+      width: 13px;
+      height: 13px;
+      padding: 0;
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      background: var(--dot);
+    }
+    .sticky-bar .dot:hover:not(:disabled) { background: var(--dot); border-color: #eceef2; }
+    .sticky-bar .dot.on { outline: 2px solid #eceef2; outline-offset: 1px; }
+    .sticky-bar .mini {
+      flex: none;
+      height: 20px;
+      padding: 0 6px;
+      font-size: 11px;
+      background: rgba(0, 0, 0, 0.28);
+      border-color: rgba(255, 255, 255, 0.22);
+    }
+    .sticky-bar .mini:hover:not(:disabled) { background: rgba(0, 0, 0, 0.45); border-color: rgba(255, 255, 255, 0.4); }
+    .sticky-bar .mini.x { width: 20px; padding: 0; }
+    .sticky-bar .state { margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sticky-bar .state.bad { color: #ffb4b5; }
+    .sticky-bar .inline-status { font-size: 11px; color: inherit; }
+    .sticky-bar .spin { width: 10px; height: 10px; }
+    .edges line.tether { stroke-width: 1.5; stroke-dasharray: 4 5; stroke-linecap: round; }
 
     /* Where the node being written will land */
     .ghost {
@@ -412,6 +500,10 @@
     const POLL_MS = 1500;
     const READER_W = 480;      // width of the reader panel
     const READER_WIDE = 1000;  // from this window width, reader and composer fit side by side
+    const STICKY_W = 200;
+    const STICKY_COLORS = ['yellow', 'green', 'blue', 'pink', 'purple'];
+    // Dot and connector colour for each sticky colour (matches the --s-line values in the CSS).
+    const STICKY_LINE = { yellow: '#9a8840', green: '#4f8f68', blue: '#5380b5', pink: '#a8648a', purple: '#8263b8' };
     const DRAG_THRESHOLD = 5;  // a press that moves less than this many pixels is a click, not a drag
 
     const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -472,7 +564,7 @@
       return html`<span class="inline-status"><span class="spin"></span>${label} ${seconds}s</span>`;
     }
 
-    function Card({ node, colour, isActive, liveText, isTarget, isDragging, isReading, pendingSince, pollError, retry, move, onHeight, onContinue, onBranch, onRetry, onExpand, onDragStart, onDragMove, onDragEnd, onSaveRetry }) {
+    function Card({ node, colour, isActive, liveText, isTarget, isDragging, isReading, pendingSince, pollError, retry, move, onHeight, onContinue, onBranch, onRetry, onExpand, onAddSticky, onDragStart, onDragMove, onDragEnd, onSaveRetry }) {
       const ref = useRef(null);
       const bodyRef = useRef(null);
       const stickToBottom = useRef(true);
@@ -507,7 +599,15 @@
       let body;
       let note = null;
       let actions = null;
-      const expand = html`<button class="push" onClick=${() => onExpand(node)} title="Read the full prompt and reply in a side panel">Expand</button>`;
+      const expand = html`
+        <span class="push">
+          <button class="icon" onClick=${() => onAddSticky(node)} title="Add a sticky note to this card" aria-label="Add a sticky note to this card">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
+              <path d="M2.5 2.5h11v7l-4 4h-7z" /><path d="M13.5 9.5h-4v4" />
+            </svg>
+          </button>
+          <button onClick=${() => onExpand(node)} title="Read the full prompt and reply in a side panel">Expand</button>
+        </span>`;
 
       if (node.status === 'pending') {
         if (text) {
@@ -562,6 +662,90 @@
           ${body}
           ${note}
           ${actions}
+        </div>`;
+    }
+
+    // A sticky note. Plain text only. Double-click to edit, drag to move.
+    // Everything in the bottom bar is a normal button and never starts a drag.
+    function Sticky({ sticky, x, y, isEditing, isDragging, save, removal, onHeight, onDragStart, onDragMove, onDragEnd, onEdit, onEndEdit, onInput, onColor, onAskDelete, onCancelDelete, onDelete, onRetrySave }) {
+      const ref = useRef(null);
+      const inputRef = useRef(null);
+
+      useLayoutEffect(() => {
+        const el = ref.current;
+        const report = () => onHeight(sticky.id, el.offsetHeight);
+        report();
+        const ro = new ResizeObserver(report);
+        ro.observe(el);
+        return () => ro.disconnect();
+      }, [sticky.id, onHeight]);
+
+      // Entering edit mode puts the cursor at the end of the text.
+      useEffect(() => {
+        const el = inputRef.current;
+        if (!isEditing || !el) return;
+        el.focus();
+        el.setSelectionRange(el.value.length, el.value.length);
+      }, [isEditing]);
+
+      const stop = (e) => e.stopPropagation();
+      const inBar = (e) => e.target.closest('.sticky-bar');
+
+      let bar;
+      if (removal) {
+        bar = removal.busy
+          ? html`<${Spinner} label="Deleting…" />`
+          : html`
+              <span class=${removal.error ? 'bad' : ''} title=${removal.error || ''}>${removal.error ? 'Could not delete.' : 'Delete this note?'}</span>
+              <button class="mini" onClick=${() => onDelete(sticky.id)}>${removal.error ? 'Retry' : 'Delete'}</button>
+              <button class="mini" onClick=${() => onCancelDelete(sticky.id)}>Cancel</button>`;
+      } else {
+        let state = null;
+        if (save && save.state === 'saving') state = html`<span class="state">Saving…</span>`;
+        else if (save && save.state === 'saved') state = html`<span class="state">Saved</span>`;
+        else if (save && save.state === 'failed') {
+          state = html`
+            <span class="state bad" title=${save.error}>Not saved</span>
+            <button class="mini" onClick=${() => onRetrySave(sticky.id)}>Retry</button>`;
+        } else state = html`<span class="state"></span>`;
+        bar = html`
+          ${STICKY_COLORS.map((c) => html`
+            <button
+              key=${c}
+              class=${'dot' + (sticky.color === c ? ' on' : '')}
+              style=${{ '--dot': STICKY_LINE[c] }}
+              title=${c[0].toUpperCase() + c.slice(1)}
+              aria-label=${'Colour: ' + c}
+              onClick=${() => onColor(sticky.id, c)}
+            ></button>`)}
+          ${state}
+          <button class="mini x" title="Delete this note" aria-label="Delete this note" onClick=${() => onAskDelete(sticky.id)}>×</button>`;
+      }
+
+      return html`
+        <div
+          class=${'sticky c-' + sticky.color + (isDragging ? ' dragging' : '')}
+          ref=${ref}
+          style=${{ left: x + 'px', top: y + 'px' }}
+          onPointerDown=${(e) => { if (!isEditing && !inBar(e)) onDragStart(e, sticky); }}
+          onPointerMove=${onDragMove}
+          onPointerUp=${onDragEnd}
+          onPointerCancel=${onDragEnd}
+          onDblClick=${(e) => { if (!inBar(e)) onEdit(sticky.id); }}
+        >
+          ${isEditing
+            ? html`<textarea
+                ref=${inputRef}
+                class="sticky-text scroll"
+                placeholder="Write a note…"
+                value=${sticky.content}
+                onInput=${(e) => onInput(sticky.id, e.target.value)}
+                onBlur=${() => onEndEdit(sticky.id)}
+                onKeyDown=${(e) => { if (e.key === 'Escape') { e.preventDefault(); e.currentTarget.blur(); } }}
+                onPointerDown=${stop}
+              ></textarea>`
+            : html`<div class=${'sticky-text scroll' + (sticky.content ? '' : ' empty')} title="Double-click to edit · drag to move">${sticky.content || 'Double-click to write'}</div>`}
+          <div class="sticky-bar" onPointerDown=${stop}>${bar}</div>
         </div>`;
     }
 
@@ -739,14 +923,39 @@
       return `M ${x1} ${y1} C ${x1} ${y1 + bend}, ${x2} ${y2 - bend}, ${x2} ${y2}`;
     }
 
-    function fitView(nodes, heights, width, height) {
-      if (nodes.length === 0) return { x: width / 2, y: height / 2, k: 1 };
+    // The point where the line from a rectangle's centre towards (tx, ty) crosses its border.
+    function borderPoint(r, tx, ty) {
+      const cx = r.x + r.w / 2;
+      const cy = r.y + r.h / 2;
+      const dx = tx - cx;
+      const dy = ty - cy;
+      if (dx === 0 && dy === 0) return { x: cx, y: cy };
+      const scale = Math.min(dx === 0 ? Infinity : r.w / 2 / Math.abs(dx), dy === 0 ? Infinity : r.h / 2 / Math.abs(dy));
+      return { x: cx + dx * scale, y: cy + dy * scale };
+    }
+    const rectsOverlap = (a, b, gap = 0) =>
+      a.x < b.x + b.w + gap && a.x + a.w + gap > b.x && a.y < b.y + b.h + gap && a.y + a.h + gap > b.y;
+
+    // Where a sticky is drawn. An attached sticky stores its offset from its card.
+    function stickyPosition(sticky, byId) {
+      const node = sticky.node_id ? byId.get(sticky.node_id) : null;
+      return node ? { x: node.x + sticky.x, y: node.y + sticky.y } : { x: sticky.x, y: sticky.y };
+    }
+
+    function fitView(nodes, heights, width, height, extraRects = []) {
+      if (nodes.length === 0 && extraRects.length === 0) return { x: width / 2, y: height / 2, k: 1 };
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
       for (const n of nodes) {
         minX = Math.min(minX, n.x);
         minY = Math.min(minY, n.y);
         maxX = Math.max(maxX, n.x + CARD_W);
         maxY = Math.max(maxY, n.y + (heights[n.id] || 200));
+      }
+      for (const r of extraRects) {
+        minX = Math.min(minX, r.x);
+        minY = Math.min(minY, r.y);
+        maxX = Math.max(maxX, r.x + r.w);
+        maxY = Math.max(maxY, r.y + r.h);
       }
       const boxW = maxX - minX;
       const boxH = maxY - minY;
@@ -802,7 +1011,7 @@
     function App() {
       const [list, setList] = useState({ status: 'loading', items: [], error: null });
       const [canvasId, setCanvasId] = useState(() => location.hash.slice(1) || null);
-      const [doc, setDoc] = useState({ status: 'idle', canvas: null, nodes: [], error: null });
+      const [doc, setDoc] = useState({ status: 'idle', canvas: null, nodes: [], stickies: [], error: null });
       const [view, setView] = useState({ x: 0, y: 0, k: 1 });
       const [heights, setHeights] = useState({});
       const [creating, setCreating] = useState({ busy: false, error: null, title: null });
@@ -816,6 +1025,12 @@
       const [liveText, setLiveText] = useState({});     // node id -> reply text received over the stream so far
       const [readerId, setReaderId] = useState(null);   // node shown in the reader panel
       const [selectedId, setSelectedId] = useState(null); // node whose path to the root is highlighted
+      const [stickyHeights, setStickyHeights] = useState({});
+      const [editingSticky, setEditingSticky] = useState(null);   // sticky id being edited
+      const [draggingSticky, setDraggingSticky] = useState(null);
+      const [stickySaves, setStickySaves] = useState({});         // sticky id -> { state: saving|saved|failed, error }
+      const [removals, setRemovals] = useState({});               // sticky id -> { busy, error } while its delete confirm is open
+      const [stickyAdd, setStickyAdd] = useState({ busy: false, error: null, node: null });
       const [streamTick, setStreamTick] = useState(0);  // bumped when a node drops from streaming to polling
 
       const viewportRef = useRef(null);
@@ -830,6 +1045,7 @@
       const flushTimer = useRef(null);
       const viewRef = useRef(view);
       viewRef.current = view;
+      const flushStickiesRef = useRef(null);
       const readerOpenRef = useRef(false);
       readerOpenRef.current = readerId !== null;
       const nodesRef = useRef(doc.nodes);
@@ -851,14 +1067,21 @@
 
       const loadCanvas = useCallback(async (id) => {
         const seq = ++loadSeq.current;
-        setDoc({ status: 'loading', canvas: null, nodes: [], error: null });
+        setDoc({ status: 'loading', canvas: null, nodes: [], stickies: [], error: null });
         setHeights({});
         setComposer(null);
         setRetries({});
         setPollErrors({});
         setMoves({});
+        // Send any sticky text still waiting for its autosave before leaving this canvas.
+        if (flushStickiesRef.current) flushStickiesRef.current();
         setReaderId(null);
         setSelectedId(null);
+        setStickyHeights({});
+        setEditingSticky(null);
+        setStickySaves({});
+        setRemovals({});
+        setStickyAdd({ busy: false, error: null, node: null });
         setLiveText({});
         liveBuffer.current = {};
         noStream.current = new Set();
@@ -866,10 +1089,10 @@
           const data = await api('/api/canvases/' + id);
           if (seq !== loadSeq.current) return; // a newer load has started
           fitWhenMeasured.current = true;
-          setDoc({ status: 'ready', canvas: data.canvas, nodes: data.nodes, error: null });
+          setDoc({ status: 'ready', canvas: data.canvas, nodes: data.nodes, stickies: data.stickies || [], error: null });
         } catch (err) {
           if (seq !== loadSeq.current) return;
-          setDoc({ status: 'error', canvas: null, nodes: [], error: err.message });
+          setDoc({ status: 'error', canvas: null, nodes: [], stickies: [], error: err.message });
         }
       }, []);
 
@@ -879,7 +1102,7 @@
         if (list.status !== 'ready') return;
         if (!canvasId) {
           loadSeq.current++;
-          setDoc({ status: 'idle', canvas: null, nodes: [], error: null });
+          setDoc({ status: 'idle', canvas: null, nodes: [], stickies: [], error: null });
           setComposer(null);
           return;
         }
@@ -904,8 +1127,10 @@
 
       const fit = useCallback(() => {
         const rect = viewportRef.current.getBoundingClientRect();
-        setView(fitView(doc.nodes, heights, rect.width, rect.height));
-      }, [doc.nodes, heights]);
+        const byId = new Map(doc.nodes.map((n) => [n.id, n]));
+        const stickyRects = doc.stickies.map((st) => ({ ...stickyPosition(st, byId), w: STICKY_W, h: stickyHeights[st.id] || 120 }));
+        setView(fitView(doc.nodes, heights, rect.width, rect.height, stickyRects));
+      }, [doc.nodes, doc.stickies, heights, stickyHeights]);
 
       // Fit once after a canvas loads, as soon as every card has been measured.
       useEffect(() => {
@@ -918,6 +1143,9 @@
 
       const onHeight = useCallback((id, value) => {
         setHeights((prev) => (prev[id] === value ? prev : { ...prev, [id]: value }));
+      }, []);
+      const onStickyHeight = useCallback((id, value) => {
+        setStickyHeights((prev) => (prev[id] === value ? prev : { ...prev, [id]: value }));
       }, []);
 
       // Pan just enough to bring a canvas rectangle on screen. The bottom of the
@@ -997,7 +1225,7 @@
       const drag = useRef(null);
       const onPointerDown = (e) => {
         if (e.button !== 0 && e.button !== 1) return;
-        if (e.target.closest('.card, .notice, .composer, .reader')) return;
+        if (e.target.closest('.card, .sticky, .notice, .composer, .reader')) return;
         try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
         drag.current = { id: e.pointerId, startX: e.clientX, startY: e.clientY, lastX: e.clientX, lastY: e.clientY, moved: false };
       };
@@ -1303,6 +1531,166 @@
         else if (e.type === 'pointerup') setSelectedId(d.id);
       };
 
+      // -- Sticky notes -------------------------------------------------------
+
+      const updateSticky = (id, patch) => {
+        setDoc((d) => ({ ...d, stickies: d.stickies.map((st) => (st.id === id ? { ...st, ...patch } : st)) }));
+      };
+
+      // Saving. One request at a time per sticky: changes made while a save is
+      // running are merged and sent next, and a failed save keeps its changes
+      // so Retry sends everything that is still unsaved.
+      const saveQueue = useRef({});   // sticky id -> { inFlight, queued, failed }
+      const savedTimers = useRef({});
+      const setSaveState = (id, value) => {
+        setStickySaves((m) => {
+          if (value) return { ...m, [id]: value };
+          const { [id]: _, ...rest } = m;
+          return rest;
+        });
+      };
+      const saveSticky = async (id, patch) => {
+        const q = saveQueue.current[id] || (saveQueue.current[id] = { inFlight: false, queued: null, failed: null });
+        let body = { ...(q.failed || {}), ...patch };
+        q.failed = null;
+        if (q.inFlight) { q.queued = { ...(q.queued || {}), ...body }; return; }
+        if (Object.keys(body).length === 0) return;
+        q.inFlight = true;
+        clearTimeout(savedTimers.current[id]);
+        setSaveState(id, { state: 'saving', error: null });
+        try {
+          await api('/api/stickies/' + id, { method: 'PATCH', body: JSON.stringify(body) });
+          q.inFlight = false;
+          if (q.queued) { const next = q.queued; q.queued = null; return saveSticky(id, next); }
+          setSaveState(id, { state: 'saved', error: null });
+          savedTimers.current[id] = setTimeout(() => setSaveState(id, null), 2000);
+        } catch (err) {
+          q.inFlight = false;
+          q.failed = { ...body, ...(q.queued || {}) };
+          q.queued = null;
+          setSaveState(id, { state: 'failed', error: err.message });
+        }
+      };
+      const retryStickySave = (id) => saveSticky(id, {});
+
+      // Text: autosave shortly after typing stops, and at once when editing ends.
+      const unsavedText = useRef({});
+      const textTimers = useRef({});
+      const flushStickyText = (id) => {
+        clearTimeout(textTimers.current[id]);
+        if (!(id in unsavedText.current)) return;
+        const content = unsavedText.current[id];
+        delete unsavedText.current[id];
+        saveSticky(id, { content });
+      };
+      flushStickiesRef.current = () => { for (const id of Object.keys(unsavedText.current)) flushStickyText(id); };
+      const onStickyInput = (id, content) => {
+        updateSticky(id, { content });
+        unsavedText.current[id] = content;
+        clearTimeout(textTimers.current[id]);
+        textTimers.current[id] = setTimeout(() => flushStickyText(id), 700);
+      };
+      const endStickyEdit = (id) => {
+        flushStickyText(id);
+        setEditingSticky((current) => (current === id ? null : current));
+      };
+      const onStickyColor = (id, color) => {
+        updateSticky(id, { color });
+        saveSticky(id, { color });
+      };
+
+      // Creating. A free sticky goes to the centre of the viewport. An attached
+      // one goes beside its card: to the right, or to the left when the right
+      // side is taken by another card and the left side is not.
+      const addSticky = async (node) => {
+        const canvasId = doc.canvas.id;
+        let pos;
+        if (node) {
+          const count = doc.stickies.filter((st) => st.node_id === node.id).length;
+          const y = 8 + count * 36;
+          const right = { x: CARD_W + 24, y };
+          const left = { x: -STICKY_W - 24, y };
+          const blocked = (o) => doc.nodes.some((n) => n.id !== node.id && rectsOverlap(
+            { x: node.x + o.x, y: node.y + o.y, w: STICKY_W, h: 130 },
+            { x: n.x, y: n.y, w: CARD_W, h: heights[n.id] || 200 }));
+          pos = blocked(right) && !blocked(left) ? left : right;
+        } else {
+          const rect = viewportRef.current.getBoundingClientRect();
+          const v = viewRef.current;
+          pos = {
+            x: Math.round((rect.width / 2 - v.x) / v.k - STICKY_W / 2),
+            y: Math.round((rect.height / 2 - v.y) / v.k - 60),
+          };
+          // Do not drop a new sticky exactly on top of another free one.
+          while (doc.stickies.some((st) => !st.node_id && Math.abs(st.x - pos.x) < 12 && Math.abs(st.y - pos.y) < 12)) {
+            pos = { x: pos.x + 24, y: pos.y + 24 };
+          }
+        }
+        setStickyAdd({ busy: true, error: null, node });
+        try {
+          const sticky = await api(`/api/canvases/${canvasId}/stickies`, {
+            method: 'POST',
+            body: JSON.stringify({ node_id: node ? node.id : null, x: pos.x, y: pos.y }),
+          });
+          setDoc((d) => (d.canvas && d.canvas.id === canvasId ? { ...d, stickies: [...d.stickies, sticky] } : d));
+          setEditingSticky(sticky.id); // ready to type straight away
+          setStickyAdd({ busy: false, error: null, node: null });
+        } catch (err) {
+          setStickyAdd({ busy: false, error: err.message, node });
+        }
+      };
+
+      // Deleting, with a small confirm inside the sticky.
+      const askDeleteSticky = (id) => setRemovals((m) => ({ ...m, [id]: { busy: false, error: null } }));
+      const cancelDeleteSticky = (id) => setRemovals((m) => { const { [id]: _, ...rest } = m; return rest; });
+      const deleteSticky = async (id) => {
+        setRemovals((m) => ({ ...m, [id]: { busy: true, error: null } }));
+        clearTimeout(textTimers.current[id]);
+        delete unsavedText.current[id];
+        try {
+          await api('/api/stickies/' + id, { method: 'DELETE' });
+          setDoc((d) => ({ ...d, stickies: d.stickies.filter((st) => st.id !== id) }));
+          cancelDeleteSticky(id);
+          setSaveState(id, null);
+          delete saveQueue.current[id];
+        } catch (err) {
+          setRemovals((m) => ({ ...m, [id]: { busy: false, error: err.message } }));
+        }
+      };
+
+      // Dragging. The stored x and y are moved by the drag distance, which works
+      // the same for free stickies (canvas position) and attached ones (offset).
+      const stickyDrag = useRef(null);
+      const onStickyDragStart = (e, sticky) => {
+        if (e.button !== 0) return;
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+        stickyDrag.current = {
+          id: sticky.id, pointerId: e.pointerId,
+          startX: e.clientX, startY: e.clientY,
+          origX: sticky.x, origY: sticky.y, x: sticky.x, y: sticky.y,
+          moved: false,
+        };
+      };
+      const onStickyDragMove = (e) => {
+        const d = stickyDrag.current;
+        if (!d || d.pointerId !== e.pointerId) return;
+        const dx = e.clientX - d.startX;
+        const dy = e.clientY - d.startY;
+        if (!d.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+        if (!d.moved) { d.moved = true; setDraggingSticky(d.id); }
+        const k = viewRef.current.k;
+        d.x = Math.round(d.origX + dx / k);
+        d.y = Math.round(d.origY + dy / k);
+        updateSticky(d.id, { x: d.x, y: d.y });
+      };
+      const onStickyDragEnd = (e) => {
+        const d = stickyDrag.current;
+        if (!d || d.pointerId !== e.pointerId) return;
+        stickyDrag.current = null;
+        setDraggingSticky(null);
+        if (d.moved) saveSticky(d.id, { x: d.x, y: d.y });
+      };
+
       // -- Render ------------------------------------------------------------
 
       const byId = new Map(doc.nodes.map((n) => [n.id, n]));
@@ -1327,6 +1715,19 @@
         }
       }
       edges.push(...activeEdges);
+
+      // Attached stickies: a short dashed connector from the card's edge to the sticky's edge.
+      const placedStickies = doc.stickies.map((st) => ({ st, ...stickyPosition(st, byId) }));
+      for (const { st, x, y } of placedStickies) {
+        const node = st.node_id ? byId.get(st.node_id) : null;
+        if (!node || heights[node.id] === undefined) continue;
+        const cardRect = { x: node.x, y: node.y, w: CARD_W, h: heights[node.id] };
+        const noteRect = { x, y, w: STICKY_W, h: stickyHeights[st.id] || 120 };
+        if (rectsOverlap(cardRect, noteRect)) continue;
+        const a = borderPoint(cardRect, noteRect.x + noteRect.w / 2, noteRect.y + noteRect.h / 2);
+        const b = borderPoint(noteRect, cardRect.x + cardRect.w / 2, cardRect.y + cardRect.h / 2);
+        edges.push(html`<line key=${'tether-' + st.id} class="tether" style=${{ stroke: STICKY_LINE[st.color] || STICKY_LINE.yellow }} x1=${a.x} y1=${a.y} x2=${b.x} y2=${b.y} />`);
+      }
 
       // The node being written: a dashed outline where it will land, joined to its parent.
       const ready = doc.status === 'ready';
@@ -1379,6 +1780,13 @@
           </select>
           <button onClick=${onNewCanvas} disabled=${creating.busy || list.status !== 'ready'}>New canvas</button>
           <button onClick=${onNewConversation} disabled=${!ready || isEmpty || (composer && composer.busy)}>New conversation</button>
+          <button onClick=${() => addSticky(null)} disabled=${!ready || stickyAdd.busy} title="Add a free sticky note at the centre of the screen">+ Sticky</button>
+          ${stickyAdd.busy && html`<${Spinner} label="Adding sticky…" />`}
+          ${stickyAdd.error && html`
+            <span class="inline-status bad">
+              <span class="clip" title=${stickyAdd.error}>Could not add the sticky: ${stickyAdd.error}</span>
+              <button onClick=${() => addSticky(stickyAdd.node)}>Retry</button>
+            </span>`}
           ${creating.busy && html`<${Spinner} label="Creating canvas…" />`}
           ${creating.error && html`
             <span class="inline-status bad">
@@ -1415,6 +1823,7 @@
                 liveText=${liveText[n.id]}
                 isReading=${readerId === n.id}
                 onExpand=${onExpand}
+                onAddSticky=${addSticky}
                 isTarget=${!!composer && composer.parentId === n.id}
                 pendingSince=${n.status === 'pending' ? (pendingSince.current[n.id] || Date.parse(n.updated_at)) : null}
                 pollError=${pollErrors[n.id]}
@@ -1429,6 +1838,29 @@
                 onContinue=${onContinue}
                 onBranch=${onBranch}
                 onRetry=${onRetry}
+              />`)}
+            ${placedStickies.map(({ st, x, y }) => html`
+              <${Sticky}
+                key=${st.id}
+                sticky=${st}
+                x=${x}
+                y=${y}
+                isEditing=${editingSticky === st.id}
+                isDragging=${draggingSticky === st.id}
+                save=${stickySaves[st.id]}
+                removal=${removals[st.id]}
+                onHeight=${onStickyHeight}
+                onDragStart=${onStickyDragStart}
+                onDragMove=${onStickyDragMove}
+                onDragEnd=${onStickyDragEnd}
+                onEdit=${setEditingSticky}
+                onEndEdit=${endStickyEdit}
+                onInput=${onStickyInput}
+                onColor=${onStickyColor}
+                onAskDelete=${askDeleteSticky}
+                onCancelDelete=${cancelDeleteSticky}
+                onDelete=${deleteSticky}
+                onRetrySave=${retryStickySave}
               />`)}
             ${showGhost && html`<div class="ghost" style=${{ left: composer.x + 'px', top: composer.y + 'px' }}>New node</div>`}
           </div>
