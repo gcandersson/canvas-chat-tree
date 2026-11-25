@@ -62,7 +62,7 @@ Verify: two-finger scroll moves the canvas in all directions; pinch and Ctrl/Cmd
 
 ### Unit 5c — Light mode (added after Unit 5 at Gustav's request)
 - A theme toggle (sun/moon icon) in the top bar.
-- Light theme: clean, warm off-white background, white cards, dark text, with the same layout and spacing.
+- Light theme: clean, neutral light grey canvas (around #F2F2F2) with a subtle square grid, white top bar, buttons, panels and cards, near-black text, bright pastel stickies and a clear blue primary highlight (around #4262FF), with the same layout and spacing. No warm or beige tones. (First built as warm off-white; changed to this neutral, Miro-style look at Gustav's request after Unit 6.)
 - Every colour is a CSS variable with a dark and a light value, including a light-mode version of the 8-colour branch palette and the 5 sticky colours, so they read well on a light background.
 - Default to the operating system's setting, remember the choice in localStorage, and switch instantly without a reload.
 - All later units must support both themes.
