@@ -1167,7 +1167,7 @@
     }
 
     // A wheel over a card section that really has overflow scrolls that section
-    // instead of zooming the canvas.
+    // instead of panning the canvas.
     function scrollableUnder(target, stopAt) {
       for (let el = target; el && el !== stopAt; el = el.parentElement) {
         if (el.classList && el.classList.contains('scroll') && el.scrollHeight > el.clientHeight + 1) return el;
@@ -1376,7 +1376,7 @@
         });
       }, []);
 
-      // -- Zoom (wheel, trackpad pinch, Safari gestures) ---------------------
+      // -- Wheel and trackpad: scroll pans, pinch or Ctrl/Cmd + wheel zooms ---
 
       useEffect(() => {
         const vp = viewportRef.current;
@@ -1393,17 +1393,50 @@
           });
         };
 
+        // One scroll gesture is a burst of wheel events. Whatever the first one
+        // did (pan the canvas, or scroll some content) the rest of the burst
+        // keeps doing, so panning across a card with a long reply does not
+        // suddenly start scrolling that reply, and the other way round.
+        let gesture = { mode: null, at: 0 };
+        const GESTURE_GAP_MS = 180;
+
         const onWheel = (e) => {
-          // Trackpad pinch arrives as a wheel event with ctrlKey set.
-          const pinch = e.ctrlKey || e.metaKey;
-          // Panels scroll by themselves; a pinch over them does nothing rather than zoom the page.
-          if (e.target.closest('.composer, .reader, .minimap')) { if (pinch) e.preventDefault(); return; }
-          if (!pinch && scrollableUnder(e.target, vp)) return;
-          e.preventDefault();
+          // Trackpad pinch arrives as a wheel event with ctrlKey set; Ctrl or
+          // Cmd + wheel is the same thing done by hand.
+          const zoom = e.ctrlKey || e.metaKey;
+          const overPanel = e.target.closest('.composer, .reader, .minimap');
+
+          // Wheel deltas in pixels, whatever unit the device reports.
+          let dx = e.deltaX;
           let dy = e.deltaY;
-          if (e.deltaMode === 1) dy *= 16;
-          else if (e.deltaMode === 2) dy *= vp.clientHeight;
-          zoomAt(e.clientX, e.clientY, Math.exp(-dy * (pinch ? 0.01 : 0.0015)));
+          if (e.deltaMode === 1) { dx *= 16; dy *= 16; }
+          else if (e.deltaMode === 2) { dx *= vp.clientWidth; dy *= vp.clientHeight; }
+
+          if (zoom) {
+            e.preventDefault(); // never let the browser zoom the whole page
+            if (overPanel) return;
+            // A mouse wheel moves in big notches, a pinch in small steps.
+            const coarse = e.deltaMode !== 0 || Math.abs(e.deltaY) >= 50;
+            zoomAt(e.clientX, e.clientY, Math.exp(-dy * (coarse ? 0.0015 : 0.01)));
+            return;
+          }
+
+          const now = performance.now();
+          const continuing = now - gesture.at < GESTURE_GAP_MS;
+          let mode;
+          if (continuing && gesture.mode) mode = gesture.mode;
+          else mode = overPanel || scrollableUnder(e.target, vp) ? 'scroll' : 'pan';
+          // Panels always keep their own scrolling, even mid-gesture.
+          if (overPanel) mode = 'scroll';
+          gesture = { mode, at: now };
+
+          if (mode === 'scroll') return; // the content under the cursor scrolls by itself
+
+          // Pan. Two-finger scroll gives both axes; a plain wheel gives vertical
+          // only, and Shift + wheel turns that into horizontal.
+          e.preventDefault();
+          if (e.shiftKey && dx === 0) { dx = dy; dy = 0; }
+          setView((v) => ({ ...v, x: v.x - dx, y: v.y - dy }));
         };
 
         // Safari reports trackpad pinch as gesture events instead.
