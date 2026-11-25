@@ -593,6 +593,31 @@
       .viewport.reader-open .composer:not(.centred) { left: calc((100% - 480px) / 2); }
     }
 
+    /* Toast: short messages about a whole-canvas action (Tidy and its undo) */
+    .toast {
+      position: absolute;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      max-width: calc(100% - 32px);
+      padding: 8px 12px;
+      background: var(--panel);
+      border: 1px solid var(--border-strong);
+      border-radius: 10px;
+      box-shadow: 0 6px 18px var(--shadow-2);
+      cursor: default;
+      white-space: nowrap;
+    }
+    .toast.bad { border-color: var(--error); }
+    .toast .msg { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .toast .msg.bad { color: var(--error); }
+    .toast .count { color: var(--muted); font-variant-numeric: tabular-nums; }
+    .toast button { height: 28px; padding: 2px 10px; font-size: 13px; flex: none; }
+
     /* Centre overlay: loading, error and empty states */
     .overlay {
       position: absolute;
@@ -671,6 +696,10 @@
     const GHOST_H = 120;       // height of the "new node lands here" outline
     const NEW_CARD_H = 260;    // assumed height of a not-yet-created card, for overlap checks
     const POLL_MS = 1500;
+    const TREE_GAP = 140;        // gap between separate trees after Tidy
+    const UNMEASURED_H = 370;    // tallest a card can be; used when a card's height is not known
+    const TIDY_MS = 450;         // length of the Tidy animation
+    const UNDO_MS = 10000;       // how long "Undo tidy" stays available
     const READER_W = 480;      // width of the reader panel
     const READER_WIDE = 1000;  // from this window width, reader and composer fit side by side
     const STICKY_W = 200;
@@ -750,6 +779,16 @@
       }, []);
       const seconds = Math.max(0, Math.floor((now - (since || mounted.current)) / 1000));
       return html`<span class="inline-status"><span class="spin"></span>${label} ${seconds}s</span>`;
+    }
+
+    // Seconds left until a moment in time, counting down.
+    function Countdown({ until }) {
+      const [now, setNow] = useState(Date.now());
+      useEffect(() => {
+        const t = setInterval(() => setNow(Date.now()), 250);
+        return () => clearInterval(t);
+      }, []);
+      return html`<span class="count">${Math.max(0, Math.ceil((until - now) / 1000))}s</span>`;
     }
 
     function Card({ node, colour, isActive, liveText, isTarget, isDragging, isReading, pendingSince, pollError, retry, move, onHeight, onContinue, onBranch, onRetry, onExpand, onAddSticky, descendants, isCollapsed, onToggleCollapse, onDragStart, onDragMove, onDragEnd, onSaveRetry }) {
@@ -1314,6 +1353,72 @@
       return avoidOverlap(rightmost.x + CARD_W + GAP_X, rightmost.y, nodes, heights);
     }
 
+    // Tidy layout: a clean top-down tree for every root, trees side by side.
+    // Returns Map(node id -> { x, y }). It only computes; the caller animates
+    // and saves. Children keep their creation order, left to right. Each
+    // subtree gets a column as wide as its children need, the parent is centred
+    // over it, and each depth is one row, as tall as its tallest card.
+    function tidyLayout(nodes, heights) {
+      const sorted = [...nodes].sort((a, b) =>
+        a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : a.id < b.id ? -1 : 1);
+      const ids = new Set(sorted.map((n) => n.id));
+      const childrenOf = new Map();
+      const roots = [];
+      for (const n of sorted) {
+        if (n.parent_id && ids.has(n.parent_id)) {
+          if (!childrenOf.has(n.parent_id)) childrenOf.set(n.parent_id, []);
+          childrenOf.get(n.parent_id).push(n.id);
+        } else {
+          roots.push(n.id);
+        }
+      }
+      const kids = (id) => childrenOf.get(id) || [];
+      const heightOf = (id) => heights[id] || UNMEASURED_H;
+
+      // Width of each subtree.
+      const widthOf = new Map();
+      const measure = (id) => {
+        let total = 0;
+        kids(id).forEach((child, i) => { total += measure(child) + (i ? GAP_X : 0); });
+        const width = Math.max(CARD_W, total);
+        widthOf.set(id, width);
+        return width;
+      };
+
+      // The layout starts at the top-left corner of where the cards are now,
+      // so the canvas does not jump somewhere else.
+      const originX = Math.min(...sorted.map((n) => n.x));
+      const originY = Math.min(...sorted.map((n) => n.y));
+
+      const result = new Map();
+      let treeLeft = originX;
+      for (const root of roots) {
+        measure(root);
+        const placed = []; // { id, x, depth }
+        const place = (id, left, depth) => {
+          const width = widthOf.get(id);
+          placed.push({ id, x: left + (width - CARD_W) / 2, depth });
+          const children = kids(id);
+          const childrenWidth = children.reduce((sum, c, i) => sum + widthOf.get(c) + (i ? GAP_X : 0), 0);
+          let childLeft = left + (width - childrenWidth) / 2;
+          for (const child of children) {
+            place(child, childLeft, depth + 1);
+            childLeft += widthOf.get(child) + GAP_X;
+          }
+        };
+        place(root, treeLeft, 0);
+
+        const rowHeight = [];
+        for (const item of placed) rowHeight[item.depth] = Math.max(rowHeight[item.depth] || 0, heightOf(item.id));
+        const rowTop = [originY];
+        for (let d = 1; d < rowHeight.length; d++) rowTop[d] = rowTop[d - 1] + rowHeight[d - 1] + GAP_Y;
+        for (const item of placed) result.set(item.id, { x: Math.round(item.x), y: Math.round(rowTop[item.depth]) });
+
+        treeLeft += widthOf.get(root) + TREE_GAP;
+      }
+      return result;
+    }
+
     // A wheel over a card section that really has overflow scrolls that section
     // instead of panning the canvas.
     function scrollableUnder(target, stopAt) {
@@ -1343,6 +1448,8 @@
       const [readerId, setReaderId] = useState(null);   // node shown in the reader panel
       const [selectedId, setSelectedId] = useState(null); // node whose path to the root is highlighted
       const [theme, setTheme] = useState(() => chosenTheme() || systemTheme());
+      // Tidy layout: phase is idle | animating | saving | done | restored | failed.
+      const [tidy, setTidy] = useState({ phase: 'idle' });
       const [collapsed, setCollapsed] = useState(() => new Set()); // node ids whose descendants are hidden
       const [vpSize, setVpSize] = useState({ w: 0, h: 0 });        // viewport size, for the minimap
       const [stickyHeights, setStickyHeights] = useState({});
@@ -1366,6 +1473,8 @@
       const viewRef = useRef(view);
       viewRef.current = view;
       const flushStickiesRef = useRef(null);
+      const animFrame = useRef(null);
+      const animTimer = useRef(null);
       const readerOpenRef = useRef(false);
       readerOpenRef.current = readerId !== null;
       const nodesRef = useRef(doc.nodes);
@@ -1415,6 +1524,9 @@
         setRetries({});
         setPollErrors({});
         setMoves({});
+        cancelAnimationFrame(animFrame.current);
+        clearTimeout(animTimer.current);
+        setTidy({ phase: 'idle' });
         // Send any sticky text still waiting for its autosave before leaving this canvas.
         if (flushStickiesRef.current) flushStickiesRef.current();
         setReaderId(null);
@@ -1634,7 +1746,7 @@
       const drag = useRef(null);
       const onPointerDown = (e) => {
         if (e.button !== 0 && e.button !== 1) return;
-        if (e.target.closest('.card, .sticky, .notice, .composer, .reader, .minimap')) return;
+        if (e.target.closest('.card, .sticky, .notice, .composer, .reader, .minimap, .toast')) return;
         try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
         drag.current = { id: e.pointerId, startX: e.clientX, startY: e.clientY, lastX: e.clientX, lastY: e.clientY, moved: false };
       };
@@ -1942,6 +2054,133 @@
         else if (e.type === 'pointerup') setSelectedId(d.id);
       };
 
+      // -- Tidy layout --------------------------------------------------------
+      // A one-off action: it works out new positions, animates the cards there
+      // and saves every position in one request. Positions are always stored;
+      // there is no live "auto layout" mode.
+
+      // Move cards (and optionally the view) smoothly to new positions.
+      const animateTo = (targets, targetView) => new Promise((resolve) => {
+        cancelAnimationFrame(animFrame.current);
+        const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const duration = reduced ? 0 : TIDY_MS;
+        const from = new Map(nodesRef.current.map((n) => [n.id, { x: n.x, y: n.y }]));
+        const fromView = viewRef.current;
+        const started = performance.now();
+        const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+        const mix = (a, b, e) => a + (b - a) * e;
+        let finished = false;
+        const step = (now) => {
+          if (finished) return;
+          const t = duration === 0 ? 1 : Math.min(1, (now - started) / duration);
+          const e = ease(t);
+          setDoc((d) => ({
+            ...d,
+            nodes: d.nodes.map((n) => {
+              const a = from.get(n.id);
+              const b = targets.get(n.id);
+              if (!a || !b) return n;
+              return t === 1 ? { ...n, x: b.x, y: b.y } : { ...n, x: mix(a.x, b.x, e), y: mix(a.y, b.y, e) };
+            }),
+          }));
+          if (targetView) {
+            setView(t === 1 ? targetView : { x: mix(fromView.x, targetView.x, e), y: mix(fromView.y, targetView.y, e), k: mix(fromView.k, targetView.k, e) });
+          }
+          if (t < 1) {
+            animFrame.current = requestAnimationFrame(step);
+          } else {
+            finished = true;
+            clearTimeout(animTimer.current);
+            resolve();
+          }
+        };
+        animFrame.current = requestAnimationFrame(step);
+        // Browsers pause animation frames in a background tab. This timer makes
+        // sure the cards still arrive and the layout still gets saved.
+        clearTimeout(animTimer.current);
+        animTimer.current = setTimeout(() => step(started + duration), duration + 300);
+      });
+
+      // The view that fits the canvas once its cards are at the given positions.
+      const viewFitting = (positions) => {
+        const rect = viewportRef.current.getBoundingClientRect();
+        const moved = doc.nodes.map((n) => ({ ...n, ...(positions.get(n.id) || {}) }));
+        const movedById = new Map(moved.map((n) => [n.id, n]));
+        const hidden = hiddenNodes(collapsed, treeInfo(doc.nodes).childrenOf);
+        const stickyRects = doc.stickies
+          .filter((st) => !(st.node_id && hidden.has(st.node_id)))
+          .map((st) => ({ ...stickyPosition(st, movedById), w: STICKY_W, h: stickyHeights[st.id] || 120 }));
+        return fitView(moved.filter((n) => !hidden.has(n.id)), heights, rect.width, rect.height, stickyRects);
+      };
+
+      // Save a whole layout in one request. job = { kind: 'tidy' | 'undo', canvasId, positions, prev, prevView }.
+      const saveLayout = async (job) => {
+        setTidy({ ...job, phase: 'saving' });
+        try {
+          await api(`/api/canvases/${job.canvasId}/positions`, {
+            method: 'PATCH',
+            body: JSON.stringify({ positions: [...job.positions].map(([id, pos]) => ({ id, x: pos.x, y: pos.y })) }),
+          });
+          setTidy(job.kind === 'tidy' ? { ...job, phase: 'done', until: Date.now() + UNDO_MS } : { ...job, phase: 'restored' });
+        } catch (err) {
+          setTidy({ ...job, phase: 'failed', error: err.message });
+        }
+      };
+
+      const tidyBusy = tidy.phase === 'animating' || tidy.phase === 'saving';
+      const runTidy = async () => {
+        if (tidyBusy || !doc.canvas || doc.nodes.length === 0) return;
+        const job = {
+          kind: 'tidy',
+          canvasId: doc.canvas.id,
+          positions: tidyLayout(doc.nodes, heights),
+          prev: new Map(doc.nodes.map((n) => [n.id, { x: n.x, y: n.y }])),
+          prevView: viewRef.current,
+        };
+        setTidy({ ...job, phase: 'animating' });
+        await animateTo(job.positions, viewFitting(job.positions));
+        await saveLayout(job);
+      };
+      // Undo: animate back to where everything was, and save that.
+      const undoTidy = async () => {
+        if (tidyBusy || !tidy.prev) return;
+        const job = { kind: 'undo', canvasId: tidy.canvasId, positions: tidy.prev, prev: null, prevView: null };
+        const backTo = tidy.prevView;
+        setTidy({ ...job, phase: 'animating' });
+        await animateTo(job.positions, backTo);
+        await saveLayout(job);
+      };
+      const retryTidySave = () => saveLayout({ kind: tidy.kind, canvasId: tidy.canvasId, positions: tidy.positions, prev: tidy.prev, prevView: tidy.prevView });
+
+      // The "Undo tidy" offer lasts 10 seconds; "Layout restored" a moment.
+      useEffect(() => {
+        if (tidy.phase !== 'done' && tidy.phase !== 'restored') return;
+        const wait = tidy.phase === 'done' ? Math.max(0, tidy.until - Date.now()) : 2500;
+        const t = setTimeout(() => setTidy({ phase: 'idle' }), wait);
+        return () => clearTimeout(t);
+      }, [tidy.phase, tidy.until]);
+
+      let toast = null;
+      if (tidy.phase === 'saving') {
+        toast = html`<div class="toast"><${Spinner} label=${tidy.kind === 'undo' ? 'Restoring the old layout…' : 'Saving the tidy layout…'} /></div>`;
+      } else if (tidy.phase === 'done') {
+        toast = html`
+          <div class="toast">
+            <span class="msg">Layout tidied and saved.</span>
+            <button onClick=${undoTidy}>Undo tidy</button>
+            <${Countdown} until=${tidy.until} />
+          </div>`;
+      } else if (tidy.phase === 'restored') {
+        toast = html`<div class="toast"><span class="msg">Old layout restored.</span></div>`;
+      } else if (tidy.phase === 'failed') {
+        toast = html`
+          <div class="toast bad">
+            <span class="msg bad" title=${tidy.error}>${tidy.kind === 'undo' ? 'Could not save the restored layout' : 'Could not save the tidy layout'}: ${tidy.error}</span>
+            <button class="primary" onClick=${retryTidySave}>Retry</button>
+            ${tidy.kind === 'tidy' && html`<button onClick=${undoTidy}>Undo tidy</button>`}
+          </div>`;
+      }
+
       // -- Sticky notes -------------------------------------------------------
 
       const updateSticky = (id, patch) => {
@@ -2204,6 +2443,7 @@
           <button onClick=${onNewCanvas} disabled=${creating.busy || list.status !== 'ready'}>New canvas</button>
           <button onClick=${onNewConversation} disabled=${!ready || isEmpty || (composer && composer.busy)}>New conversation</button>
           <button onClick=${() => addSticky(null)} disabled=${!ready || stickyAdd.busy} title="Add a free sticky note at the centre of the screen">+ Sticky</button>
+          <button onClick=${runTidy} disabled=${!ready || doc.nodes.length === 0 || tidyBusy} title="Rearrange every card into a clean tree and save the positions">Tidy</button>
           ${stickyAdd.busy && html`<${Spinner} label="Adding sticky…" />`}
           ${stickyAdd.error && html`
             <span class="inline-status bad">
@@ -2306,6 +2546,7 @@
             ${showGhost && html`<div class="ghost" style=${{ left: composer.x + 'px', top: composer.y + 'px' }}>New node</div>`}
           </div>
           ${overlay && html`<div class="overlay">${overlay}</div>`}
+          ${ready && toast}
           ${ready && miniBlocks.length > 0 && vpSize.w > 0 && html`
             <${Minimap} blocks=${miniBlocks} view=${view} size=${vpSize} onMove=${centreOn} />`}
           ${ready && composer && html`

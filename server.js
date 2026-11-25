@@ -14,6 +14,7 @@ const DATABASE_URL = process.env.DATABASE_URL || '';
 const MAX_TOKENS = 8192;
 const MAX_PROMPT_CHARS = 20000;
 const MAX_STICKY_CHARS = 10000;
+const MAX_BATCH_POSITIONS = 5000;
 const STICKY_COLORS = ['yellow', 'green', 'blue', 'pink', 'purple'];
 const SYSTEM_PROMPT =
   'The user is exploring ideas on a branching canvas, where each exchange is a node and any node ' +
@@ -437,6 +438,42 @@ app.get('/api/canvases/:id', async (req, res) => {
     pool.query('SELECT * FROM stickies WHERE canvas_id = $1 ORDER BY created_at ASC, id ASC', [id]),
   ]);
   res.json({ canvas: canvas.rows[0], nodes: nodes.rows, stickies: stickies.rows });
+});
+
+// Save many node positions in one request (used by Tidy layout and its undo).
+// Body: { positions: [{ id, x, y }, ...] }. Only nodes on this canvas are touched.
+app.patch('/api/canvases/:id/positions', async (req, res) => {
+  const canvasId = requireUuid(req.params.id, 'Canvas id');
+  const list = req.body && req.body.positions;
+  if (!Array.isArray(list) || list.length === 0) {
+    throw new HttpError(400, 'positions must be a non-empty array of { id, x, y }.');
+  }
+  if (list.length > MAX_BATCH_POSITIONS) {
+    throw new HttpError(400, `Too many positions in one request (max ${MAX_BATCH_POSITIONS}).`);
+  }
+  const ids = [];
+  const xs = [];
+  const ys = [];
+  for (const item of list) {
+    if (!item || typeof item !== 'object') throw new HttpError(400, 'Each position must be an object { id, x, y }.');
+    ids.push(requireUuid(item.id, 'Position id'));
+    xs.push(readCoord(item.x, 'x', { required: true }));
+    ys.push(readCoord(item.y, 'y', { required: true }));
+  }
+
+  const canvas = await pool.query('SELECT id FROM canvases WHERE id = $1', [canvasId]);
+  if (canvas.rowCount === 0) throw new HttpError(404, 'Canvas not found.');
+
+  // One statement, so the whole layout is saved or none of it is.
+  // updated_at is left alone: it marks when a pending node's wait started.
+  const { rowCount } = await pool.query(
+    `UPDATE nodes AS n
+        SET x = v.x, y = v.y
+       FROM unnest($2::uuid[], $3::real[], $4::real[]) AS v(id, x, y)
+      WHERE n.id = v.id AND n.canvas_id = $1`,
+    [canvasId, ids, xs, ys]
+  );
+  res.json({ ok: true, updated: rowCount });
 });
 
 // --- Nodes -----------------------------------------------------------------
