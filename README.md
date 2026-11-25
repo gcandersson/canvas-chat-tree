@@ -2,7 +2,7 @@
 
 An infinite canvas where every AI chat exchange is a node, and any node can be branched.
 
-> Status: early work in progress. v0.1 is being built one unit at a time; sections marked "coming in v0.1" are not finished yet.
+![A canvas with one conversation that splits into three branches](docs/canvas-overview.png)
 
 ## Why
 
@@ -10,31 +10,38 @@ Linear chat gets messy when you think in branches. You ask a question, get an an
 
 canvas-chat-tree lays the conversation out as a tree on a canvas. Each exchange (your prompt plus the AI's reply) is a card. You can continue from any card or branch from it, and the AI only ever sees the path from the root to the card it is answering, never the sibling branches.
 
+![Branching from a node: the composer and the outline where the new node will land](docs/canvas-branch.png)
+
+The screenshots show a demo canvas with invented content.
+
 ## Features
 
-Coming in v0.1:
-
-- Infinite canvas: pan, zoom towards the cursor, pinch zoom, fit to screen
-- Every exchange is a node card; continue or branch from any node
-- The AI answers using only the path to that node
+- Infinite canvas: drag to pan, wheel or trackpad to zoom towards the cursor, pinch zoom, fit to screen
+- Every exchange is a node card; **Continue** adds a follow-up below, **Branch** starts a new direction beside it
+- The AI answers using only the path to that node, so branches never leak into each other
 - Curved edges from parent to child
-- Pending state with an elapsed-time counter, error state with retry
-- Drag nodes to rearrange; positions are saved
+- Basic Markdown in replies (bold, headings, lists, code), sanitised
+- A pending node shows a spinner and elapsed seconds; a failed node shows the error and a Retry button
+- Drag a node by its header to rearrange; positions are saved
 - Several canvases, with a switcher
 - Optional password protection (HTTP Basic Auth)
 
-Available now: everything above except dragging nodes to rearrange them, which is next.
+## Live demo
+
+There is no public demo. The author's own instance is password-protected, because every prompt spends API credits. To try it, run it locally or deploy your own copy; both take a few minutes.
 
 ## Tech stack
 
 - Node.js (20 or newer) + Express
 - Postgres, via the `pg` driver
 - Anthropic API, via `@anthropic-ai/sdk`
-- Frontend: a single HTML file using Preact + htm from esm.sh, no build step
+- Frontend: a single HTML file ([public/index.html](public/index.html)) using Preact + htm and micromark from esm.sh, with no build step
+
+The schema (two tables, `canvases` and `nodes`) is created automatically when the server starts.
 
 ## Run locally
 
-You need Node.js 20 or newer and a Postgres database.
+You need Node.js 20 or newer, a Postgres database and an Anthropic API key.
 
 ```bash
 npm install
@@ -56,27 +63,41 @@ The server reads them from the process environment (it does not load a `.env` fi
 npm start
 ```
 
-Open http://localhost:8080. The tables are created automatically on start. `GET /api/health` returns `{ "ok": true, "db": true, "model": "..." }` when the database is reachable.
+Open http://localhost:8080. `GET /api/health` returns `{ "ok": true, "db": true, "model": "..." }` when the database is reachable.
 
 ## Deploy on Railway
 
 1. Create a Railway project with a Postgres service and an empty service for the app.
 2. On the app service, set `DATABASE_URL` (reference the Postgres service), `ANTHROPIC_API_KEY`, `APP_PASSWORD` and optionally `ASK_MODEL`.
 3. From the repo folder, run `railway link` and choose the project and the app service, then `railway up`.
-4. Generate a public domain for the app service and open `/api/health` on it.
+4. Generate a public domain for the app service and open `/api/health` on it. The server listens on `PORT`.
 
-Fuller instructions and a live demo note: coming in v0.1.
+Set `APP_PASSWORD` before sharing the URL with anyone: without it, anybody who finds the page can spend your API credits.
+
+## API
+
+| Method and path | What it does |
+| --- | --- |
+| `GET /api/health` | `{ ok, db, model }`. Always open, even with a password set |
+| `GET /api/canvases` | List canvases with `node_count`, newest first |
+| `POST /api/canvases` | Create a canvas. Body: `{ title? }` |
+| `GET /api/canvases/:id` | `{ canvas, nodes }` |
+| `POST /api/canvases/:id/nodes` | Create a node. Body: `{ parent_id, prompt, x, y }`. Returns it as `pending`, then answers in the background |
+| `GET /api/nodes/:id` | One node; the page polls this while a node is pending |
+| `PATCH /api/nodes/:id` | Save a position. Body: `{ x, y }` |
+| `POST /api/nodes/:id/retry` | Ask the AI again for a node in `error` |
 
 ## Roadmap
-
-After v0.1:
 
 - Stickies
 - Minimap
 - Subtree collapse
 - Projects with shared context
 - Streaming replies
-- Markdown rendering
+- Richer Markdown (tables, syntax highlighting)
+- Deleting nodes and renaming canvases
+- File uploads
+- Multi-user accounts
 
 ## Licence
 
