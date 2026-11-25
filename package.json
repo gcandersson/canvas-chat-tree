@@ -16,6 +16,7 @@
     "url": "git+https://github.com/gcandersson/canvas-chat-tree.git"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.14.0",
     "express": "^5.3.0",
     "pg": "^8.23.1"
   }
