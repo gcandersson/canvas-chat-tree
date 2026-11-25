@@ -11,7 +11,7 @@ const APP_PASSWORD = process.env.APP_PASSWORD || '';
 const ASK_MODEL = process.env.ASK_MODEL || 'claude-sonnet-5-5';
 const DATABASE_URL = process.env.DATABASE_URL || '';
 
-const MAX_TOKENS = 2048;
+const MAX_TOKENS = 8192;
 const MAX_PROMPT_CHARS = 20000;
 const SYSTEM_PROMPT =
   'The user is exploring ideas on a branching canvas, where each exchange is a node and any node ' +

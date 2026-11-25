@@ -23,14 +23,14 @@ Coming in v0.1:
 - Several canvases, with a switcher
 - Optional password protection (HTTP Basic Auth)
 
-Available now: the JSON API (canvases, nodes, path assembly, the AI call, retry), database schema, Basic Auth and a health check. The canvas page itself is still a placeholder.
+Available now: the JSON API (canvases, nodes, path assembly, the AI call, retry) and a read-only canvas: node cards, edges, pan, zoom, fit to screen and the canvas switcher. Writing prompts from the page is next.
 
 ## Tech stack
 
 - Node.js (20 or newer) + Express
 - Postgres, via the `pg` driver
 - Anthropic API, via `@anthropic-ai/sdk`
-- Frontend: a single HTML file using Preact + htm from esm.sh, no build step (coming in v0.1)
+- Frontend: a single HTML file using Preact + htm from esm.sh, no build step
 
 ## Run locally
 

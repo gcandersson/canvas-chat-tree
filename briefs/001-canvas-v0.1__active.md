@@ -44,7 +44,7 @@ PATCH /api/nodes/:id { x, y } → saves a dragged position
 POST /api/nodes/:id/retry → sets an error node back to pending and calls the AI again
 
 ## Path assembly (the core rule)
-To answer node N: walk parent_id from N up to its root, reverse the list, and send it to the AI as alternating messages: for each ancestor, { role: user, content: prompt } then { role: assistant, content: reply }, ending with N's own prompt as the last user message. Never include sibling branches. Use ASK_MODEL, max_tokens 2048, and a short system prompt saying the user is exploring ideas on a branching canvas.
+To answer node N: walk parent_id from N up to its root, reverse the list, and send it to the AI as alternating messages: for each ancestor, { role: user, content: prompt } then { role: assistant, content: reply }, ending with N's own prompt as the last user message. Never include sibling branches. Use ASK_MODEL, max_tokens 8192, and a short system prompt saying the user is exploring ideas on a branching canvas.
 
 ## Frontend (public/index.html)
 - Dark theme, clean and minimal.

@@ -5,40 +5,558 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>canvas-chat-tree</title>
   <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #171a21;
+      --panel-2: #1d212a;
+      --border: #2a2f3a;
+      --text: #e6e8ec;
+      --muted: #9aa3b2;
+      --accent: #7aa2f7;
+      --error: #f0787a;
+      --ok: #6fd08c;
+      --card-w: 360px;
+    }
+    * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
     body {
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+    #app { height: 100%; display: flex; flex-direction: column; }
+
+    /* Shown before the app scripts have loaded */
+    .boot { margin: auto; text-align: center; color: var(--muted); padding: 16px; }
+
+    button, select {
+      font: inherit;
+      color: var(--text);
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px 10px;
+      height: 32px;
+    }
+    button { cursor: pointer; white-space: nowrap; }
+    button:hover:not(:disabled) { border-color: #3b4252; background: #232833; }
+    button:disabled, select:disabled { opacity: 0.55; cursor: default; }
+    button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    select { max-width: 240px; }
+
+    /* Top bar */
+    .topbar {
+      flex: none;
+      height: 48px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 12px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      z-index: 2;
+    }
+    .brand { font-weight: 600; color: var(--muted); white-space: nowrap; }
+    .title {
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+    }
+    .title small { font-weight: 400; color: var(--muted); margin-left: 6px; }
+    .spacer { flex: 1; min-width: 0; }
+    .zoom { color: var(--muted); font-variant-numeric: tabular-nums; min-width: 44px; text-align: right; }
+    .inline-status { color: var(--muted); white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+    .inline-status.bad { color: var(--error); min-width: 0; }
+    .clip { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .zoom, .topbar button, .topbar select { flex: none; }
+    @media (max-width: 720px) { .brand, .title { display: none; } }
+
+    /* Viewport and world */
+    .viewport {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      cursor: grab;
+      touch-action: none;
+      background-color: var(--bg);
+      background-image: radial-gradient(circle, #252a35 1px, transparent 1.2px);
+    }
+    .viewport.panning { cursor: grabbing; user-select: none; }
+    .world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+    .edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+    .edges path { fill: none; stroke: #4a5366; stroke-width: 2; stroke-linecap: round; }
+
+    /* Node cards */
+    .card {
+      position: absolute;
+      width: var(--card-w);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+      cursor: default;
+    }
+    .card.error { border-color: var(--error); }
+    .card-head {
+      padding: 10px 12px;
+      font-weight: 600;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      max-height: 96px;
+      overflow-y: auto;
+      border-bottom: 1px solid var(--border);
+    }
+    .card-body {
+      padding: 10px 12px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      max-height: 220px;
+      overflow-y: auto;
+      color: #d3d7de;
+    }
+    .card-body.muted { color: var(--muted); display: flex; align-items: center; gap: 8px; }
+    .card-body.err { color: var(--error); }
+    .scroll { scrollbar-width: thin; scrollbar-color: #3b4252 transparent; }
+
+    /* Centre overlay: loading, error and empty states */
+    .overlay {
+      position: absolute;
+      inset: 0;
       display: flex;
       align-items: center;
       justify-content: center;
-      background: #0f1115;
-      color: #e6e8ec;
-      font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      pointer-events: none;
+      padding: 16px;
     }
-    main { text-align: center; padding: 16px; }
-    h1 { font-size: 20px; font-weight: 600; margin: 0 0 8px; }
-    p { margin: 0; color: #9aa3b2; font-size: 14px; }
-    .ok { color: #6fd08c; }
-    .bad { color: #f0787a; }
+    .notice {
+      pointer-events: auto;
+      cursor: default;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px 20px;
+      text-align: center;
+      max-width: 420px;
+      color: var(--muted);
+    }
+    .notice.bad { border-color: var(--error); }
+    .notice strong { display: block; color: var(--text); margin-bottom: 4px; }
+    .notice .row { display: flex; align-items: center; justify-content: center; gap: 8px; }
+    .notice button { margin-top: 12px; }
+
+    .spin {
+      flex: none;
+      width: 14px;
+      height: 14px;
+      border: 2px solid #3b4252;
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .spin { animation-duration: 2.4s; } }
   </style>
 </head>
 <body>
-  <main>
-    <h1>canvas-chat-tree is running</h1>
-    <p id="status">Checking health…</p>
-  </main>
+  <div id="app">
+    <div class="boot" id="boot">Loading canvas-chat-tree…</div>
+  </div>
+
   <script>
-    (async () => {
-      const el = document.getElementById('status');
+    // If the app scripts (loaded from esm.sh) never arrive, say so instead of
+    // leaving "Loading…" on screen forever.
+    setTimeout(function () {
+      var boot = document.getElementById('boot');
+      if (!boot) return;
+      boot.innerHTML = 'Could not load the app scripts (from esm.sh). Check your connection.<br><br>';
+      var b = document.createElement('button');
+      b.textContent = 'Reload';
+      b.onclick = function () { location.reload(); };
+      boot.appendChild(b);
+    }, 10000);
+  </script>
+
+  <script type="module">
+    import { h, render } from 'https://esm.sh/preact@10.25.4';
+    import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'https://esm.sh/preact@10.25.4/hooks';
+    import htm from 'https://esm.sh/htm@3.1.1';
+
+    const html = htm.bind(h);
+
+    const CARD_W = 360;
+    const MIN_ZOOM = 0.1;
+    const MAX_ZOOM = 2;
+    const FIT_PADDING = 60;
+    const GRID = 24;
+
+    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+    // --- Network ------------------------------------------------------------
+
+    async function api(path, options = {}) {
+      let res;
       try {
-        const res = await fetch('/api/health');
-        const h = await res.json();
-        el.textContent = 'Database: ' + (h.db ? 'connected' : 'not connected') + ' · Model: ' + h.model;
-        el.className = h.db ? 'ok' : 'bad';
-      } catch (err) {
-        el.textContent = 'Health check failed: ' + err.message + '. Reload to retry.';
-        el.className = 'bad';
+        res = await fetch(path, { headers: { 'content-type': 'application/json' }, ...options });
+      } catch {
+        throw new Error('Network error. Check your connection and try again.');
       }
-    })();
+      let data = null;
+      try { data = await res.json(); } catch { /* not JSON */ }
+      if (!res.ok) throw new Error((data && data.error) || `Request failed (${res.status}).`);
+      return data;
+    }
+
+    // --- Small pieces -------------------------------------------------------
+
+    // Spinner with a label and seconds counting up, so nothing waits silently.
+    function Spinner({ label }) {
+      const [seconds, setSeconds] = useState(0);
+      useEffect(() => {
+        const started = Date.now();
+        const t = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 250);
+        return () => clearInterval(t);
+      }, []);
+      return html`<span class="inline-status"><span class="spin"></span>${label} ${seconds}s</span>`;
+    }
+
+    function Card({ node, onHeight }) {
+      const ref = useRef(null);
+
+      // Report the card's real height so edges can start at its bottom-centre.
+      useLayoutEffect(() => {
+        const el = ref.current;
+        const report = () => onHeight(node.id, el.offsetHeight);
+        report();
+        const ro = new ResizeObserver(report);
+        ro.observe(el);
+        return () => ro.disconnect();
+      }, [node.id, onHeight]);
+
+      let body;
+      if (node.status === 'pending') {
+        body = html`<div class="card-body muted"><span class="spin"></span>Thinking…</div>`;
+      } else if (node.status === 'error') {
+        body = html`<div class="card-body err scroll">${node.error || 'The AI call failed.'}</div>`;
+      } else {
+        body = html`<div class="card-body scroll">${node.reply}</div>`;
+      }
+
+      return html`
+        <div class=${'card ' + node.status} ref=${ref} style=${{ left: node.x + 'px', top: node.y + 'px' }}>
+          <div class="card-head scroll">${node.prompt}</div>
+          ${body}
+        </div>`;
+    }
+
+    // Smooth curve from the parent's bottom-centre to the child's top-centre.
+    function edgePath(parent, child, parentHeight) {
+      const x1 = parent.x + CARD_W / 2;
+      const y1 = parent.y + parentHeight;
+      const x2 = child.x + CARD_W / 2;
+      const y2 = child.y;
+      const bend = Math.max(40, Math.abs(y2 - y1) / 2);
+      return `M ${x1} ${y1} C ${x1} ${y1 + bend}, ${x2} ${y2 - bend}, ${x2} ${y2}`;
+    }
+
+    function fitView(nodes, heights, width, height) {
+      if (nodes.length === 0) return { x: width / 2, y: height / 2, k: 1 };
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const n of nodes) {
+        minX = Math.min(minX, n.x);
+        minY = Math.min(minY, n.y);
+        maxX = Math.max(maxX, n.x + CARD_W);
+        maxY = Math.max(maxY, n.y + (heights[n.id] || 200));
+      }
+      const boxW = maxX - minX;
+      const boxH = maxY - minY;
+      const availW = Math.max(50, width - FIT_PADDING * 2);
+      const availH = Math.max(50, height - FIT_PADDING * 2);
+      // Never zoom in past 100% just to fill the screen.
+      const k = clamp(Math.min(availW / boxW, availH / boxH), MIN_ZOOM, 1);
+      return {
+        x: (width - boxW * k) / 2 - minX * k,
+        y: (height - boxH * k) / 2 - minY * k,
+        k,
+      };
+    }
+
+    // A wheel over a card section that really has overflow scrolls that section
+    // instead of zooming the canvas.
+    function scrollableUnder(target, stopAt) {
+      for (let el = target; el && el !== stopAt; el = el.parentElement) {
+        if (el.classList && el.classList.contains('scroll') && el.scrollHeight > el.clientHeight + 1) return el;
+      }
+      return null;
+    }
+
+    // --- App ----------------------------------------------------------------
+
+    function App() {
+      const [list, setList] = useState({ status: 'loading', items: [], error: null });
+      const [canvasId, setCanvasId] = useState(() => location.hash.slice(1) || null);
+      const [doc, setDoc] = useState({ status: 'idle', canvas: null, nodes: [], error: null });
+      const [view, setView] = useState({ x: 0, y: 0, k: 1 });
+      const [heights, setHeights] = useState({});
+      const [creating, setCreating] = useState({ busy: false, error: null, title: null });
+      const [panning, setPanning] = useState(false);
+
+      const viewportRef = useRef(null);
+      const loadSeq = useRef(0);
+      const fitWhenMeasured = useRef(false);
+
+      // -- Loading -----------------------------------------------------------
+
+      const loadList = useCallback(async () => {
+        setList((l) => ({ ...l, status: 'loading', error: null }));
+        try {
+          const items = await api('/api/canvases');
+          setList({ status: 'ready', items, error: null });
+          // Keep the canvas from the URL if it exists; otherwise open the newest.
+          setCanvasId((current) => (current && items.some((c) => c.id === current) ? current : (items[0] ? items[0].id : null)));
+        } catch (err) {
+          setList({ status: 'error', items: [], error: err.message });
+        }
+      }, []);
+
+      const loadCanvas = useCallback(async (id) => {
+        const seq = ++loadSeq.current;
+        setDoc({ status: 'loading', canvas: null, nodes: [], error: null });
+        setHeights({});
+        try {
+          const data = await api('/api/canvases/' + id);
+          if (seq !== loadSeq.current) return; // a newer load has started
+          fitWhenMeasured.current = true;
+          setDoc({ status: 'ready', canvas: data.canvas, nodes: data.nodes, error: null });
+        } catch (err) {
+          if (seq !== loadSeq.current) return;
+          setDoc({ status: 'error', canvas: null, nodes: [], error: err.message });
+        }
+      }, []);
+
+      useEffect(() => { loadList(); }, [loadList]);
+
+      useEffect(() => {
+        if (list.status !== 'ready') return;
+        if (!canvasId) {
+          loadSeq.current++;
+          setDoc({ status: 'idle', canvas: null, nodes: [], error: null });
+          return;
+        }
+        if (location.hash.slice(1) !== canvasId) history.replaceState(null, '', '#' + canvasId);
+        loadCanvas(canvasId);
+      }, [canvasId, list.status, loadCanvas]);
+
+      useEffect(() => {
+        const onHash = () => {
+          const id = location.hash.slice(1);
+          if (!id) return;
+          setCanvasId(id);
+          // A canvas the switcher does not know about yet (e.g. made in another
+          // tab): refresh the list, which also falls back if the id is unknown.
+          if (!list.items.some((c) => c.id === id)) loadList();
+        };
+        window.addEventListener('hashchange', onHash);
+        return () => window.removeEventListener('hashchange', onHash);
+      }, [list.items, loadList]);
+
+      // -- Fit to screen -----------------------------------------------------
+
+      const fit = useCallback(() => {
+        const rect = viewportRef.current.getBoundingClientRect();
+        setView(fitView(doc.nodes, heights, rect.width, rect.height));
+      }, [doc.nodes, heights]);
+
+      // Fit once after a canvas loads, as soon as every card has been measured.
+      useEffect(() => {
+        if (!fitWhenMeasured.current || doc.status !== 'ready') return;
+        if (doc.nodes.every((n) => heights[n.id] !== undefined)) {
+          fitWhenMeasured.current = false;
+          fit();
+        }
+      }, [doc, heights, fit]);
+
+      const onHeight = useCallback((id, value) => {
+        setHeights((prev) => (prev[id] === value ? prev : { ...prev, [id]: value }));
+      }, []);
+
+      // -- Zoom (wheel, trackpad pinch, Safari gestures) ---------------------
+
+      useEffect(() => {
+        const vp = viewportRef.current;
+
+        // Zoom by a factor, keeping the canvas point under (px, py) fixed.
+        const zoomAt = (clientX, clientY, factor) => {
+          const rect = vp.getBoundingClientRect();
+          const px = clientX - rect.left;
+          const py = clientY - rect.top;
+          setView((v) => {
+            const k = clamp(v.k * factor, MIN_ZOOM, MAX_ZOOM);
+            const ratio = k / v.k;
+            return { x: px - (px - v.x) * ratio, y: py - (py - v.y) * ratio, k };
+          });
+        };
+
+        const onWheel = (e) => {
+          // Trackpad pinch arrives as a wheel event with ctrlKey set.
+          const pinch = e.ctrlKey || e.metaKey;
+          if (!pinch && scrollableUnder(e.target, vp)) return;
+          e.preventDefault();
+          let dy = e.deltaY;
+          if (e.deltaMode === 1) dy *= 16;
+          else if (e.deltaMode === 2) dy *= vp.clientHeight;
+          zoomAt(e.clientX, e.clientY, Math.exp(-dy * (pinch ? 0.01 : 0.0015)));
+        };
+
+        // Safari reports trackpad pinch as gesture events instead.
+        let lastScale = 1;
+        const onGestureStart = (e) => { e.preventDefault(); lastScale = e.scale; };
+        const onGestureChange = (e) => {
+          e.preventDefault();
+          zoomAt(e.clientX, e.clientY, e.scale / lastScale);
+          lastScale = e.scale;
+        };
+
+        vp.addEventListener('wheel', onWheel, { passive: false });
+        vp.addEventListener('gesturestart', onGestureStart);
+        vp.addEventListener('gesturechange', onGestureChange);
+        return () => {
+          vp.removeEventListener('wheel', onWheel);
+          vp.removeEventListener('gesturestart', onGestureStart);
+          vp.removeEventListener('gesturechange', onGestureChange);
+        };
+      }, []);
+
+      // -- Pan (drag empty space) --------------------------------------------
+
+      const drag = useRef(null);
+      const onPointerDown = (e) => {
+        if (e.button !== 0 && e.button !== 1) return;
+        if (e.target.closest('.card') || e.target.closest('.notice')) return;
+        e.currentTarget.setPointerCapture(e.pointerId);
+        drag.current = { id: e.pointerId, lastX: e.clientX, lastY: e.clientY };
+        setPanning(true);
+      };
+      const onPointerMove = (e) => {
+        const d = drag.current;
+        if (!d || d.id !== e.pointerId) return;
+        const dx = e.clientX - d.lastX;
+        const dy = e.clientY - d.lastY;
+        d.lastX = e.clientX;
+        d.lastY = e.clientY;
+        setView((v) => ({ ...v, x: v.x + dx, y: v.y + dy }));
+      };
+      const onPointerUp = (e) => {
+        if (!drag.current || drag.current.id !== e.pointerId) return;
+        drag.current = null;
+        setPanning(false);
+      };
+
+      // -- New canvas --------------------------------------------------------
+
+      const createCanvas = async (title) => {
+        setCreating({ busy: true, error: null, title });
+        try {
+          const canvas = await api('/api/canvases', { method: 'POST', body: JSON.stringify({ title }) });
+          setList((l) => ({ ...l, items: [{ ...canvas, node_count: 0 }, ...l.items] }));
+          setCanvasId(canvas.id);
+          setCreating({ busy: false, error: null, title: null });
+        } catch (err) {
+          setCreating({ busy: false, error: err.message, title });
+        }
+      };
+      const onNewCanvas = () => {
+        const title = window.prompt('Name for the new canvas', 'Untitled canvas');
+        if (title === null) return;
+        createCanvas(title.trim() || 'Untitled canvas');
+      };
+
+      // -- Render ------------------------------------------------------------
+
+      const byId = new Map(doc.nodes.map((n) => [n.id, n]));
+      const edges = [];
+      for (const child of doc.nodes) {
+        const parent = child.parent_id && byId.get(child.parent_id);
+        if (parent && heights[parent.id] !== undefined) {
+          edges.push(html`<path key=${child.id} d=${edgePath(parent, child, heights[parent.id])} />`);
+        }
+      }
+
+      // Dot grid follows pan and zoom; spacing widens when zoomed far out.
+      const gridStep = GRID * view.k * (view.k < 0.4 ? 4 : 1);
+      const viewportStyle = {
+        backgroundSize: `${gridStep}px ${gridStep}px`,
+        backgroundPosition: `${view.x}px ${view.y}px`,
+      };
+
+      let overlay = null;
+      if (list.status === 'loading') {
+        overlay = html`<div class="notice"><div class="row"><${Spinner} label="Loading canvases…" /></div></div>`;
+      } else if (list.status === 'error') {
+        overlay = html`<div class="notice bad"><strong>Could not load your canvases</strong>${list.error}<br /><button onClick=${loadList}>Retry</button></div>`;
+      } else if (!canvasId) {
+        overlay = html`<div class="notice"><strong>No canvases yet</strong>Create one to get started.<br /><button onClick=${onNewCanvas} disabled=${creating.busy}>New canvas</button></div>`;
+      } else if (doc.status === 'loading') {
+        overlay = html`<div class="notice"><div class="row"><${Spinner} label="Loading canvas…" /></div></div>`;
+      } else if (doc.status === 'error') {
+        overlay = html`<div class="notice bad"><strong>Could not load this canvas</strong>${doc.error}<br /><button onClick=${() => loadCanvas(canvasId)}>Retry</button></div>`;
+      } else if (doc.status === 'ready' && doc.nodes.length === 0) {
+        overlay = html`<div class="notice"><strong>This canvas is empty</strong>Starting a conversation from here is coming in the next unit.</div>`;
+      }
+
+      const ready = doc.status === 'ready';
+
+      return html`
+        <div class="topbar">
+          <span class="brand">canvas-chat-tree</span>
+          <select
+            aria-label="Switch canvas"
+            value=${canvasId || ''}
+            disabled=${list.status !== 'ready' || list.items.length === 0}
+            onChange=${(e) => setCanvasId(e.target.value)}
+          >
+            ${list.items.length === 0 && html`<option value="">No canvases</option>`}
+            ${list.items.map((c) => html`<option key=${c.id} value=${c.id}>${c.title}</option>`)}
+          </select>
+          <button onClick=${onNewCanvas} disabled=${creating.busy || list.status !== 'ready'}>New canvas</button>
+          ${creating.busy && html`<${Spinner} label="Creating canvas…" />`}
+          ${creating.error && html`
+            <span class="inline-status bad">
+              <span class="clip" title=${creating.error}>Could not create the canvas: ${creating.error}</span>
+              <button onClick=${() => createCanvas(creating.title)}>Retry</button>
+            </span>`}
+          ${ready && html`
+            <span class="title">
+              ${doc.canvas.title}
+              <small>${doc.nodes.length} ${doc.nodes.length === 1 ? 'node' : 'nodes'}</small>
+            </span>`}
+          <span class="spacer"></span>
+          <span class="zoom" title="Zoom level">${Math.round(view.k * 100)}%</span>
+          <button onClick=${fit} disabled=${!ready || doc.nodes.length === 0}>Fit to screen</button>
+        </div>
+
+        <div
+          class=${'viewport' + (panning ? ' panning' : '')}
+          ref=${viewportRef}
+          style=${viewportStyle}
+          onPointerDown=${onPointerDown}
+          onPointerMove=${onPointerMove}
+          onPointerUp=${onPointerUp}
+          onPointerCancel=${onPointerUp}
+        >
+          <div class="world" style=${{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}>
+            <svg class="edges" width="1" height="1">${edges}</svg>
+            ${doc.nodes.map((n) => html`<${Card} key=${n.id} node=${n} onHeight=${onHeight} />`)}
+          </div>
+          ${overlay && html`<div class="overlay">${overlay}</div>`}
+        </div>`;
+    }
+
+    const root = document.getElementById('app');
+    root.textContent = '';
+    render(html`<${App} />`, root);
   </script>
 </body>
 </html>
