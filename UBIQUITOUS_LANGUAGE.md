@@ -21,3 +21,5 @@ Canvas instructions: free text set per canvas and sent to the AI for every node 
 Collapse: hiding a node's descendants on screen, per canvas, in the browser only.
 Minimap: the small overview of the whole canvas in the bottom-right corner.
 Tidy layout: a one-off action that rearranges all cards into a clean tree and saves the positions.
+Pan: moving the viewport across the canvas without changing the zoom level.
+Theme: the page's colour scheme, dark or light; follows the operating system until chosen, then remembered in the browser.

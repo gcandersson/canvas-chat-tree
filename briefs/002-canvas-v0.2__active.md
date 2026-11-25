@@ -53,6 +53,21 @@ Verify: create a free and an attached sticky, edit, recolour, drag both, drag th
 - Minimap: small overlay in the bottom-right corner showing all cards as small blocks (in their branch colours) and the current viewport as a rectangle. Click or drag in the minimap to move the view. Hidden on screens narrower than 700px.
 Verify: the collapse-scope test from pitfall 2 passes; collapse survives reload; minimap rectangle tracks pan and zoom; clicking the minimap jumps the view.
 
+### Unit 5b — Trackpad gestures like Miro (added after Unit 5 at Gustav's request)
+- Two-finger scroll pans the canvas in any direction.
+- Pinch zooms toward the cursor, and so does Ctrl or Cmd + scroll wheel.
+- A plain mouse wheel without a modifier also pans vertically, with Shift + wheel panning horizontally.
+- Scrolling inside a long reply, the reader panel or a sticky still scrolls that content, not the canvas.
+Verify: two-finger scroll moves the canvas in all directions; pinch and Ctrl/Cmd + wheel zoom toward the cursor; a plain wheel pans up and down and Shift + wheel pans sideways; scrolling over a long reply, the reader panel or a long sticky scrolls that content.
+
+### Unit 5c — Light mode (added after Unit 5 at Gustav's request)
+- A theme toggle (sun/moon icon) in the top bar.
+- Light theme: clean, warm off-white background, white cards, dark text, with the same layout and spacing.
+- Every colour is a CSS variable with a dark and a light value, including a light-mode version of the 8-colour branch palette and the 5 sticky colours, so they read well on a light background.
+- Default to the operating system's setting, remember the choice in localStorage, and switch instantly without a reload.
+- All later units must support both themes.
+Verify: the toggle switches the whole page at once with no reload; the choice survives a reload; with no stored choice the page follows the operating system; branch colours, stickies, the reader panel, the composer and the minimap all read well in both themes.
+
 ### Unit 6 — Tidy layout
 - A "Tidy" button in the top bar computes a clean tree layout for the current canvas (each root's tree laid out top-down, children spread horizontally without overlap, separate trees side by side) and animates cards to their new positions, then saves all positions in one batch request (new endpoint PATCH /api/canvases/:id/positions).
 - An "Undo tidy" toast appears for 10 seconds and restores the previous positions if clicked.
@@ -79,9 +94,11 @@ Canvas instructions: free text set per canvas and sent to the AI for every node 
 Collapse: hiding a node's descendants on screen, per canvas, in the browser only.
 Minimap: the small overview of the whole canvas in the bottom-right corner.
 Tidy layout: a one-off action that rearranges all cards into a clean tree and saves the positions.
+Pan: moving the viewport across the canvas without changing the zoom level.
+Theme: the page's colour scheme, dark or light; follows the operating system until chosen, then remembered in the browser.
 
 ## Out of scope for v0.2 (goes to the README roadmap as v0.3)
 File and image uploads, web search, model picker and answer style (prose / concise), dictation, connectors to my own tools (MCP), importing ChatGPT history, projects that group several canvases, canvas export, multi-user.
 
 ## Definition of done
-All seven units deployed and verified live by Gustav, no schema surprises, no regressions in branching, path assembly, drag, markdown or error and retry. Update the README (features, screenshots retaken on an invented demo canvas, roadmap) in Unit 7's commit, then rename this brief to __shipped.
+All units (1 to 7, including 5b and 5c) deployed and verified live by Gustav, no schema surprises, no regressions in branching, path assembly, drag, markdown or error and retry. Update the README (features, screenshots retaken on an invented demo canvas, roadmap) in Unit 7's commit, then rename this brief to __shipped.
