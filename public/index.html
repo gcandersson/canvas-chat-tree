@@ -16,6 +16,17 @@
       --error: #f0787a;
       --ok: #6fd08c;
       --card-w: 360px;
+
+      /* Accent colours for branch families: 8 muted tones that read on the dark theme */
+      --branch-0: #6d8fd1;
+      --branch-1: #5fae9b;
+      --branch-2: #c9a45c;
+      --branch-3: #b07fc7;
+      --branch-4: #7fb069;
+      --branch-5: #d08a6e;
+      --branch-6: #5aa9c7;
+      --branch-7: #c77f9c;
+      --highlight: #f2f4f8; /* active path */
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
@@ -90,6 +101,7 @@
     .world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
     .edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
     .edges path { fill: none; stroke: #4a5366; stroke-width: 2; stroke-linecap: round; }
+    .edges path.active { stroke: var(--highlight) !important; stroke-width: 3; }
     .edges path.draft { stroke: var(--accent); stroke-dasharray: 6 6; opacity: 0.8; }
 
     /* Node cards */
@@ -97,13 +109,17 @@
       position: absolute;
       width: var(--card-w);
       background: var(--panel);
-      border: 1px solid var(--border);
+      /* --node is the card's accent colour (its branch family), set per card */
+      border: 1px solid var(--node, var(--border));
       border-radius: 10px;
       box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
       cursor: default;
     }
-    .card.error { border-color: var(--error); }
-    .card.target { border-color: var(--accent); }
+    /* Rings are drawn with box-shadow so they never change the card's size. */
+    .card.error { border-color: var(--error); box-shadow: 0 0 0 1px var(--error), 0 4px 16px rgba(0, 0, 0, 0.35); }
+    .card.reading { box-shadow: 0 0 0 2px rgba(122, 162, 247, 0.55), 0 4px 16px rgba(0, 0, 0, 0.35); }
+    .card.active { border-color: var(--highlight); box-shadow: 0 0 0 2px var(--highlight), 0 4px 16px rgba(0, 0, 0, 0.35); }
+    .card.target { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 4px 16px rgba(0, 0, 0, 0.35); }
     .card.dragging { z-index: 1; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55); }
     .card.dragging .card-head { cursor: grabbing; }
     .card-badge {
@@ -134,6 +150,9 @@
       max-height: 96px;
       overflow-y: auto;
       border-bottom: 1px solid var(--border);
+      border-radius: 9px 9px 0 0;
+      /* a faint wash of the accent colour, so a branch family reads at a glance */
+      background: color-mix(in srgb, var(--node, transparent) 12%, transparent);
       cursor: grab;
       user-select: none;
       -webkit-user-select: none;
@@ -307,7 +326,6 @@
     .reader-reply.md code { font-size: 13.5px; }
     .reader-error { color: var(--error); white-space: pre-wrap; overflow-wrap: anywhere; margin-bottom: 12px; }
     .reader-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--muted); }
-    .card.reading { box-shadow: 0 0 0 2px rgba(122, 162, 247, 0.55), 0 4px 16px rgba(0, 0, 0, 0.35); }
     /* With the reader open on a wide screen, the composer centres in the space that is left. */
     @media (min-width: 1000px) {
       .viewport.reader-open .composer:not(.centred) { left: calc((100% - 480px) / 2); }
@@ -453,7 +471,7 @@
       return html`<span class="inline-status"><span class="spin"></span>${label} ${seconds}s</span>`;
     }
 
-    function Card({ node, liveText, isTarget, isDragging, isReading, pendingSince, pollError, retry, move, onHeight, onContinue, onBranch, onRetry, onExpand, onDragStart, onDragMove, onDragEnd, onSaveRetry }) {
+    function Card({ node, colour, isActive, liveText, isTarget, isDragging, isReading, pendingSince, pollError, retry, move, onHeight, onContinue, onBranch, onRetry, onExpand, onDragStart, onDragMove, onDragEnd, onSaveRetry }) {
       const ref = useRef(null);
       const bodyRef = useRef(null);
       const stickToBottom = useRef(true);
@@ -521,9 +539,9 @@
 
       return html`
         <div
-          class=${'card ' + node.status + (isTarget ? ' target' : '') + (isDragging ? ' dragging' : '') + (isReading ? ' reading' : '')}
+          class=${'card ' + node.status + (isTarget ? ' target' : '') + (isDragging ? ' dragging' : '') + (isReading ? ' reading' : '') + (isActive ? ' active' : '')}
           ref=${ref}
-          style=${{ left: node.x + 'px', top: node.y + 'px' }}
+          style=${{ left: node.x + 'px', top: node.y + 'px', '--node': `var(--branch-${colour})` }}
         >
           ${move && html`
             <div class=${'card-badge' + (move.error ? ' bad' : '')}>
@@ -534,7 +552,7 @@
             </div>`}
           <div
             class="card-head scroll"
-            title="Drag to move"
+            title="Click to highlight the path to this node · drag to move"
             onPointerDown=${(e) => onDragStart(e, node)}
             onPointerMove=${onDragMove}
             onPointerUp=${onDragEnd}
@@ -669,6 +687,49 @@
         </div>`;
     }
 
+    // --- Branch colours -----------------------------------------------------
+
+    const PALETTE_SIZE = 8;
+
+    // Accent colour (palette index) for every node. Pure render logic; nothing is stored.
+    // Going through the nodes in creation order: a root starts a new colour, the
+    // first child of a node inherits its parent's colour, and every later child
+    // (a branch) takes the next palette colour, skipping its parent's and its
+    // siblings' colours where it can.
+    function branchColours(nodes) {
+      const sorted = [...nodes].sort((a, b) =>
+        a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : a.id < b.id ? -1 : 1);
+      const colour = new Map();   // node id -> palette index
+      const taken = new Map();    // parent id -> colours its children already use
+      let next = 0;
+      for (const n of sorted) {
+        if (!n.parent_id || !colour.has(n.parent_id)) {
+          colour.set(n.id, next++ % PALETTE_SIZE);
+          continue;
+        }
+        const parentColour = colour.get(n.parent_id);
+        const siblings = taken.get(n.parent_id) || new Set();
+        let c = parentColour;
+        if (siblings.size > 0) {
+          for (let tries = 0; tries < PALETTE_SIZE; tries++) {
+            c = next++ % PALETTE_SIZE;
+            if (c !== parentColour && !siblings.has(c)) break;
+          }
+        }
+        siblings.add(c);
+        taken.set(n.parent_id, siblings);
+        colour.set(n.id, c);
+      }
+      return colour;
+    }
+
+    // The active path: a node plus all its ancestors back to the root.
+    function pathTo(id, byId) {
+      const path = new Set();
+      for (let n = byId.get(id); n && !path.has(n.id); n = n.parent_id ? byId.get(n.parent_id) : null) path.add(n.id);
+      return path;
+    }
+
     // --- Geometry -----------------------------------------------------------
 
     // Smooth curve from (x1, y1) at a parent's bottom-centre to (x2, y2) at a child's top-centre.
@@ -753,6 +814,7 @@
       const [draggingId, setDraggingId] = useState(null);
       const [liveText, setLiveText] = useState({});     // node id -> reply text received over the stream so far
       const [readerId, setReaderId] = useState(null);   // node shown in the reader panel
+      const [selectedId, setSelectedId] = useState(null); // node whose path to the root is highlighted
       const [streamTick, setStreamTick] = useState(0);  // bumped when a node drops from streaming to polling
 
       const viewportRef = useRef(null);
@@ -795,6 +857,7 @@
         setPollErrors({});
         setMoves({});
         setReaderId(null);
+        setSelectedId(null);
         setLiveText({});
         liveBuffer.current = {};
         noStream.current = new Set();
@@ -935,12 +998,20 @@
         if (e.button !== 0 && e.button !== 1) return;
         if (e.target.closest('.card, .notice, .composer, .reader')) return;
         try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
-        drag.current = { id: e.pointerId, lastX: e.clientX, lastY: e.clientY };
-        setPanning(true);
+        drag.current = { id: e.pointerId, startX: e.clientX, startY: e.clientY, lastX: e.clientX, lastY: e.clientY, moved: false };
       };
       const onPointerMove = (e) => {
         const d = drag.current;
         if (!d || d.id !== e.pointerId) return;
+        if (!d.moved) {
+          // Only a press that travels counts as a pan; less than that is a click.
+          if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) < DRAG_THRESHOLD) return;
+          d.moved = true;
+          d.lastX = e.clientX;
+          d.lastY = e.clientY;
+          setPanning(true);
+          return;
+        }
         const dx = e.clientX - d.lastX;
         const dy = e.clientY - d.lastY;
         d.lastX = e.clientX;
@@ -948,9 +1019,12 @@
         setView((v) => ({ ...v, x: v.x + dx, y: v.y + dy }));
       };
       const onPointerUp = (e) => {
-        if (!drag.current || drag.current.id !== e.pointerId) return;
+        const d = drag.current;
+        if (!d || d.id !== e.pointerId) return;
         drag.current = null;
         setPanning(false);
+        // A click on empty canvas clears the active path. (A cancelled press does not.)
+        if (!d.moved && e.type === 'pointerup') setSelectedId(null);
       };
 
       // -- New canvas --------------------------------------------------------
@@ -1224,18 +1298,34 @@
         nodeDrag.current = null;
         setDraggingId(null);
         if (d.moved) savePosition(d.id, d.x, d.y);
+        // A press on the header that did not move is a click: select the node.
+        else if (e.type === 'pointerup') setSelectedId(d.id);
       };
 
       // -- Render ------------------------------------------------------------
 
       const byId = new Map(doc.nodes.map((n) => [n.id, n]));
+      const colours = branchColours(doc.nodes);
+      const activePath = selectedId && byId.has(selectedId) ? pathTo(selectedId, byId) : new Set();
+
+      // An edge takes the accent colour of the card it leads into. Edges on the
+      // active path are drawn last so they sit on top.
       const edges = [];
+      const activeEdges = [];
       for (const child of doc.nodes) {
         const parent = child.parent_id && byId.get(child.parent_id);
         if (parent && heights[parent.id] !== undefined) {
-          edges.push(html`<path key=${child.id} d=${curve(parent.x + CARD_W / 2, parent.y + heights[parent.id], child.x + CARD_W / 2, child.y)} />`);
+          const active = activePath.has(child.id);
+          (active ? activeEdges : edges).push(html`
+            <path
+              key=${child.id}
+              class=${active ? 'active' : ''}
+              style=${{ stroke: `var(--branch-${colours.get(child.id)})` }}
+              d=${curve(parent.x + CARD_W / 2, parent.y + heights[parent.id], child.x + CARD_W / 2, child.y)}
+            />`);
         }
       }
+      edges.push(...activeEdges);
 
       // The node being written: a dashed outline where it will land, joined to its parent.
       const ready = doc.status === 'ready';
@@ -1319,6 +1409,8 @@
               <${Card}
                 key=${n.id}
                 node=${n}
+                colour=${colours.get(n.id)}
+                isActive=${activePath.has(n.id)}
                 liveText=${liveText[n.id]}
                 isReading=${readerId === n.id}
                 onExpand=${onExpand}
