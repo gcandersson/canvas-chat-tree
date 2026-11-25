@@ -42,7 +42,9 @@
     button { cursor: pointer; white-space: nowrap; }
     button:hover:not(:disabled) { border-color: #3b4252; background: #232833; }
     button:disabled, select:disabled { opacity: 0.55; cursor: default; }
-    button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    button:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    button.primary { background: #2b3a5c; border-color: #3d5080; }
+    button.primary:hover:not(:disabled) { background: #344670; border-color: #4a6199; }
     select { max-width: 240px; }
 
     /* Top bar */
@@ -72,7 +74,7 @@
     .inline-status.bad { color: var(--error); min-width: 0; }
     .clip { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
     .zoom, .topbar button, .topbar select { flex: none; }
-    @media (max-width: 720px) { .brand, .title { display: none; } }
+    @media (max-width: 860px) { .brand, .title { display: none; } }
 
     /* Viewport and world */
     .viewport {
@@ -88,6 +90,7 @@
     .world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
     .edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
     .edges path { fill: none; stroke: #4a5366; stroke-width: 2; stroke-linecap: round; }
+    .edges path.draft { stroke: var(--accent); stroke-dasharray: 6 6; opacity: 0.8; }
 
     /* Node cards */
     .card {
@@ -100,6 +103,7 @@
       cursor: default;
     }
     .card.error { border-color: var(--error); }
+    .card.target { border-color: var(--accent); }
     .card-head {
       padding: 10px 12px;
       font-weight: 600;
@@ -117,9 +121,76 @@
       overflow-y: auto;
       color: #d3d7de;
     }
-    .card-body.muted { color: var(--muted); display: flex; align-items: center; gap: 8px; }
+    .card-body.muted { color: var(--muted); }
     .card-body.err { color: var(--error); }
+    .card-note { padding: 0 12px 10px; color: var(--error); font-size: 13px; overflow-wrap: anywhere; }
+    .card-note.soft { color: var(--muted); }
+    .card-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-top: 1px solid var(--border);
+    }
+    .card-actions button { height: 28px; padding: 2px 10px; font-size: 13px; }
     .scroll { scrollbar-width: thin; scrollbar-color: #3b4252 transparent; }
+
+    /* Where the node being written will land */
+    .ghost {
+      position: absolute;
+      width: var(--card-w);
+      height: 120px;
+      border: 2px dashed var(--accent);
+      border-radius: 10px;
+      opacity: 0.6;
+      pointer-events: none;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--accent);
+    }
+
+    /* Composer */
+    .composer {
+      position: absolute;
+      left: 50%;
+      bottom: 20px;
+      transform: translateX(-50%);
+      width: min(560px, calc(100% - 32px));
+      background: var(--panel);
+      border: 1px solid #3b4252;
+      border-radius: 12px;
+      box-shadow: 0 10px 32px rgba(0, 0, 0, 0.5);
+      padding: 12px;
+      cursor: default;
+      z-index: 1;
+    }
+    .composer.centred { bottom: auto; top: 50%; transform: translate(-50%, -50%); }
+    .composer-label {
+      color: var(--muted);
+      margin-bottom: 8px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .composer.centred .composer-label { color: var(--text); font-weight: 600; font-size: 16px; }
+    .composer textarea {
+      display: block;
+      width: 100%;
+      min-height: 76px;
+      max-height: 240px;
+      resize: vertical;
+      font: inherit;
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    .composer textarea:disabled { opacity: 0.6; }
+    .composer-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+    .composer-row .hint { color: var(--muted); font-size: 12px; }
+    .composer-error { color: var(--error); margin-top: 8px; overflow-wrap: anywhere; }
 
     /* Centre overlay: loading, error and empty states */
     .overlay {
@@ -191,8 +262,17 @@
     const MAX_ZOOM = 2;
     const FIT_PADDING = 60;
     const GRID = 24;
+    const GAP_X = 60;          // horizontal gap between sibling cards
+    const GAP_Y = 80;          // vertical gap between a parent and its children
+    const GHOST_H = 120;       // height of the "new node lands here" outline
+    const NEW_CARD_H = 260;    // assumed height of a not-yet-created card, for overlap checks
+    const POLL_MS = 1500;
 
     const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+    const snippet = (text, max = 60) => {
+      const one = text.replace(/\s+/g, ' ').trim();
+      return one.length > max ? one.slice(0, max - 1) + '…' : one;
+    };
 
     // --- Network ------------------------------------------------------------
 
@@ -212,17 +292,19 @@
     // --- Small pieces -------------------------------------------------------
 
     // Spinner with a label and seconds counting up, so nothing waits silently.
-    function Spinner({ label }) {
-      const [seconds, setSeconds] = useState(0);
+    // Counts from `since` (a timestamp in ms) when given, otherwise from when it appeared.
+    function Spinner({ label, since }) {
+      const [now, setNow] = useState(Date.now());
+      const mounted = useRef(Date.now());
       useEffect(() => {
-        const started = Date.now();
-        const t = setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 250);
+        const t = setInterval(() => setNow(Date.now()), 250);
         return () => clearInterval(t);
       }, []);
+      const seconds = Math.max(0, Math.floor((now - (since || mounted.current)) / 1000));
       return html`<span class="inline-status"><span class="spin"></span>${label} ${seconds}s</span>`;
     }
 
-    function Card({ node, onHeight }) {
+    function Card({ node, isTarget, pendingSince, pollError, retry, onHeight, onContinue, onBranch, onRetry }) {
       const ref = useRef(null);
 
       // Report the card's real height so edges can start at its bottom-centre.
@@ -236,27 +318,92 @@
       }, [node.id, onHeight]);
 
       let body;
+      let note = null;
+      let actions = null;
+
       if (node.status === 'pending') {
-        body = html`<div class="card-body muted"><span class="spin"></span>Thinking…</div>`;
+        body = html`<div class="card-body muted"><${Spinner} label="Thinking…" since=${pendingSince} /></div>`;
+        if (pollError) {
+          note = html`<div class="card-note soft">Could not check for the reply (${pollError}) Trying again every few seconds.</div>`;
+        }
       } else if (node.status === 'error') {
         body = html`<div class="card-body err scroll">${node.error || 'The AI call failed.'}</div>`;
+        if (retry && retry.error) note = html`<div class="card-note">Retry failed: ${retry.error}</div>`;
+        actions = html`
+          <div class="card-actions">
+            <button class="primary" disabled=${retry && retry.busy} onClick=${() => onRetry(node)}>Retry</button>
+            ${retry && retry.busy && html`<${Spinner} label="Retrying…" />`}
+          </div>`;
       } else {
         body = html`<div class="card-body scroll">${node.reply}</div>`;
+        actions = html`
+          <div class="card-actions">
+            <button onClick=${() => onContinue(node)} title="Add a follow-up directly below">Continue</button>
+            <button onClick=${() => onBranch(node)} title="Start a second direction from this node">Branch</button>
+          </div>`;
       }
 
       return html`
-        <div class=${'card ' + node.status} ref=${ref} style=${{ left: node.x + 'px', top: node.y + 'px' }}>
+        <div
+          class=${'card ' + node.status + (isTarget ? ' target' : '')}
+          ref=${ref}
+          style=${{ left: node.x + 'px', top: node.y + 'px' }}
+        >
           <div class="card-head scroll">${node.prompt}</div>
           ${body}
+          ${note}
+          ${actions}
         </div>`;
     }
 
-    // Smooth curve from the parent's bottom-centre to the child's top-centre.
-    function edgePath(parent, child, parentHeight) {
-      const x1 = parent.x + CARD_W / 2;
-      const y1 = parent.y + parentHeight;
-      const x2 = child.x + CARD_W / 2;
-      const y2 = child.y;
+    function Composer({ composer, label, centred, canCancel, onChange, onSend, onCancel }) {
+      const inputRef = useRef(null);
+
+      // Focus the box whenever the composer opens or is pointed at another node.
+      useEffect(() => {
+        if (inputRef.current) inputRef.current.focus();
+      }, [composer.key]);
+
+      const onKeyDown = (e) => {
+        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+          e.preventDefault();
+          onSend();
+        } else if (e.key === 'Escape' && canCancel && !composer.busy) {
+          e.preventDefault();
+          onCancel();
+        }
+      };
+
+      const empty = !composer.text.trim();
+      return html`
+        <div class=${'composer' + (centred ? ' centred' : '')}>
+          <div class="composer-label" title=${label}>${label}</div>
+          <textarea
+            ref=${inputRef}
+            class="scroll"
+            placeholder="Write a prompt…"
+            value=${composer.text}
+            disabled=${composer.busy}
+            onInput=${(e) => onChange(e.target.value)}
+            onKeyDown=${onKeyDown}
+          ></textarea>
+          ${composer.error && html`<div class="composer-error">Could not send: ${composer.error}</div>`}
+          <div class="composer-row">
+            <button class="primary" disabled=${composer.busy || empty} onClick=${onSend}>
+              ${composer.error ? 'Retry' : 'Send'}
+            </button>
+            ${canCancel && html`<button disabled=${composer.busy} onClick=${onCancel}>Cancel</button>`}
+            ${composer.busy
+              ? html`<${Spinner} label="Sending…" />`
+              : html`<span class="hint">Enter to send · Shift+Enter for a new line${canCancel ? ' · Esc to cancel' : ''}</span>`}
+          </div>
+        </div>`;
+    }
+
+    // --- Geometry -----------------------------------------------------------
+
+    // Smooth curve from (x1, y1) at a parent's bottom-centre to (x2, y2) at a child's top-centre.
+    function curve(x1, y1, x2, y2) {
       const bend = Math.max(40, Math.abs(y2 - y1) / 2);
       return `M ${x1} ${y1} C ${x1} ${y1 + bend}, ${x2} ${y2 - bend}, ${x2} ${y2}`;
     }
@@ -283,6 +430,33 @@
       };
     }
 
+    // Slide a new card to the right until it no longer overlaps an existing card.
+    function avoidOverlap(x, y, nodes, heights) {
+      const margin = 20;
+      const overlaps = (cx) => nodes.some((n) => {
+        const nh = heights[n.id] || 200;
+        return cx < n.x + CARD_W + margin && cx + CARD_W + margin > n.x &&
+               y < n.y + nh + margin && y + NEW_CARD_H + margin > n.y;
+      });
+      let cx = x;
+      for (let i = 0; i < 100 && overlaps(cx); i++) cx += CARD_W + GAP_X;
+      return { x: cx, y };
+    }
+
+    // Continue: directly below the parent. If the parent already has children,
+    // the slot below is taken, so the new child goes beside them instead.
+    // Branch: to the right of the existing children, so branches fan out side by side.
+    function placeChild(mode, parent, nodes, heights) {
+      const children = nodes.filter((n) => n.parent_id === parent.id);
+      const belowY = parent.y + (heights[parent.id] || 200) + GAP_Y;
+      if (children.length === 0) {
+        const x = mode === 'branch' ? parent.x + CARD_W + GAP_X : parent.x;
+        return avoidOverlap(x, belowY, nodes, heights);
+      }
+      const rightmost = children.reduce((a, b) => (b.x > a.x ? b : a));
+      return avoidOverlap(rightmost.x + CARD_W + GAP_X, rightmost.y, nodes, heights);
+    }
+
     // A wheel over a card section that really has overflow scrolls that section
     // instead of zooming the canvas.
     function scrollableUnder(target, stopAt) {
@@ -302,10 +476,21 @@
       const [heights, setHeights] = useState({});
       const [creating, setCreating] = useState({ busy: false, error: null, title: null });
       const [panning, setPanning] = useState(false);
+      // composer: null, or { key, mode: 'continue'|'branch'|'root', parentId, x, y, text, busy, error }
+      const [composer, setComposer] = useState(null);
+      const [retries, setRetries] = useState({});       // node id -> { busy, error }
+      const [pollErrors, setPollErrors] = useState({}); // node id -> message
 
       const viewportRef = useRef(null);
       const loadSeq = useRef(0);
       const fitWhenMeasured = useRef(false);
+      const composerSeq = useRef(0);
+      const pendingSince = useRef({}); // node id -> ms timestamp the wait started, as seen by this browser
+      const polling = useRef(new Set());
+      const viewRef = useRef(view);
+      viewRef.current = view;
+      const nodesRef = useRef(doc.nodes);
+      nodesRef.current = doc.nodes;
 
       // -- Loading -----------------------------------------------------------
 
@@ -325,6 +510,9 @@
         const seq = ++loadSeq.current;
         setDoc({ status: 'loading', canvas: null, nodes: [], error: null });
         setHeights({});
+        setComposer(null);
+        setRetries({});
+        setPollErrors({});
         try {
           const data = await api('/api/canvases/' + id);
           if (seq !== loadSeq.current) return; // a newer load has started
@@ -343,6 +531,7 @@
         if (!canvasId) {
           loadSeq.current++;
           setDoc({ status: 'idle', canvas: null, nodes: [], error: null });
+          setComposer(null);
           return;
         }
         if (location.hash.slice(1) !== canvasId) history.replaceState(null, '', '#' + canvasId);
@@ -382,6 +571,27 @@
         setHeights((prev) => (prev[id] === value ? prev : { ...prev, [id]: value }));
       }, []);
 
+      // Pan just enough to bring a canvas rectangle on screen. The bottom of the
+      // screen is treated as taken by the composer.
+      const reveal = useCallback((x, y, w, hgt) => {
+        const rect = viewportRef.current.getBoundingClientRect();
+        const pad = 24;
+        const usableBottom = Math.max(rect.height * 0.4, rect.height - 240);
+        setView((v) => {
+          const left = v.x + x * v.k;
+          const top = v.y + y * v.k;
+          const right = left + w * v.k;
+          const bottom = top + hgt * v.k;
+          let dx = 0;
+          let dy = 0;
+          if (right > rect.width - pad) dx = rect.width - pad - right;
+          if (left + dx < pad) dx = pad - left;
+          if (bottom > usableBottom - pad) dy = usableBottom - pad - bottom;
+          if (top + dy < pad) dy = pad - top;
+          return dx || dy ? { ...v, x: v.x + dx, y: v.y + dy } : v;
+        });
+      }, []);
+
       // -- Zoom (wheel, trackpad pinch, Safari gestures) ---------------------
 
       useEffect(() => {
@@ -402,7 +612,7 @@
         const onWheel = (e) => {
           // Trackpad pinch arrives as a wheel event with ctrlKey set.
           const pinch = e.ctrlKey || e.metaKey;
-          if (!pinch && scrollableUnder(e.target, vp)) return;
+          if (!pinch && (e.target.closest('.composer') || scrollableUnder(e.target, vp))) return;
           e.preventDefault();
           let dy = e.deltaY;
           if (e.deltaMode === 1) dy *= 16;
@@ -434,7 +644,7 @@
       const drag = useRef(null);
       const onPointerDown = (e) => {
         if (e.button !== 0 && e.button !== 1) return;
-        if (e.target.closest('.card') || e.target.closest('.notice')) return;
+        if (e.target.closest('.card, .notice, .composer')) return;
         e.currentTarget.setPointerCapture(e.pointerId);
         drag.current = { id: e.pointerId, lastX: e.clientX, lastY: e.clientY };
         setPanning(true);
@@ -473,6 +683,110 @@
         createCanvas(title.trim() || 'Untitled canvas');
       };
 
+      // -- Composer: Continue, Branch, New conversation ----------------------
+
+      // Where a new root node goes: the centre of what is on screen right now.
+      const rootPosition = () => {
+        const rect = viewportRef.current.getBoundingClientRect();
+        const v = viewRef.current;
+        const x = (rect.width / 2 - v.x) / v.k - CARD_W / 2;
+        const y = (rect.height / 2 - v.y) / v.k - GHOST_H;
+        return avoidOverlap(Math.round(x), Math.round(y), doc.nodes, heights);
+      };
+
+      const openComposer = (mode, parent) => {
+        const pos = parent ? placeChild(mode, parent, doc.nodes, heights) : rootPosition();
+        setComposer((prev) => ({
+          key: ++composerSeq.current,
+          mode,
+          parentId: parent ? parent.id : null,
+          x: pos.x,
+          y: pos.y,
+          text: prev && !prev.busy ? prev.text : '', // keep a half-written prompt when re-targeting
+          busy: false,
+          error: null,
+        }));
+        reveal(pos.x, pos.y, CARD_W, GHOST_H);
+      };
+      const onContinue = (node) => openComposer('continue', node);
+      const onBranch = (node) => openComposer('branch', node);
+      const onNewConversation = () => openComposer('root', null);
+
+      // An empty canvas always shows the composer, centred.
+      useEffect(() => {
+        if (doc.status === 'ready' && doc.nodes.length === 0 && !composer) {
+          setComposer({ key: ++composerSeq.current, mode: 'root', parentId: null, x: null, y: null, text: '', busy: false, error: null });
+        }
+      }, [doc.status, doc.nodes.length, composer]);
+
+      const sendComposer = async () => {
+        if (!composer || composer.busy) return;
+        const prompt = composer.text.trim();
+        if (!prompt) return;
+        const key = composer.key;
+        const targetCanvas = doc.canvas.id;
+        // On an empty canvas the position is only decided now.
+        const pos = composer.x === null ? rootPosition() : { x: composer.x, y: composer.y };
+        setComposer((c) => (c && c.key === key ? { ...c, busy: true, error: null } : c));
+        try {
+          const node = await api(`/api/canvases/${targetCanvas}/nodes`, {
+            method: 'POST',
+            body: JSON.stringify({ parent_id: composer.parentId, prompt, x: pos.x, y: pos.y }),
+          });
+          pendingSince.current[node.id] = Date.now();
+          setDoc((d) => (d.canvas && d.canvas.id === targetCanvas ? { ...d, nodes: [...d.nodes, node] } : d));
+          setList((l) => ({ ...l, items: l.items.map((c) => (c.id === targetCanvas ? { ...c, node_count: c.node_count + 1 } : c)) }));
+          setComposer((c) => (c && c.key === key ? null : c));
+        } catch (err) {
+          setComposer((c) => (c && c.key === key ? { ...c, busy: false, error: err.message } : c));
+        }
+      };
+
+      // -- Pending nodes: poll until done or error ---------------------------
+
+      const replaceNode = useCallback((fresh) => {
+        setDoc((d) => (d.canvas && d.canvas.id === fresh.canvas_id
+          ? { ...d, nodes: d.nodes.map((n) => (n.id === fresh.id ? fresh : n)) }
+          : d));
+      }, []);
+
+      const hasPending = doc.status === 'ready' && doc.nodes.some((n) => n.status === 'pending');
+      useEffect(() => {
+        if (!hasPending) return;
+        const tick = () => {
+          for (const n of nodesRef.current) {
+            if (n.status !== 'pending' || polling.current.has(n.id)) continue;
+            polling.current.add(n.id);
+            api('/api/nodes/' + n.id)
+              .then((fresh) => {
+                setPollErrors((p) => { if (!(n.id in p)) return p; const { [n.id]: _, ...rest } = p; return rest; });
+                if (fresh.status !== 'pending') {
+                  delete pendingSince.current[n.id];
+                  replaceNode(fresh);
+                }
+              })
+              .catch((err) => setPollErrors((p) => ({ ...p, [n.id]: err.message })))
+              .finally(() => polling.current.delete(n.id));
+          }
+        };
+        const t = setInterval(tick, POLL_MS);
+        return () => clearInterval(t);
+      }, [hasPending, replaceNode]);
+
+      // -- Error nodes: retry -------------------------------------------------
+
+      const onRetry = async (node) => {
+        setRetries((r) => ({ ...r, [node.id]: { busy: true, error: null } }));
+        try {
+          const fresh = await api(`/api/nodes/${node.id}/retry`, { method: 'POST' });
+          pendingSince.current[node.id] = Date.now();
+          replaceNode(fresh);
+          setRetries((r) => { const { [node.id]: _, ...rest } = r; return rest; });
+        } catch (err) {
+          setRetries((r) => ({ ...r, [node.id]: { busy: false, error: err.message } }));
+        }
+      };
+
       // -- Render ------------------------------------------------------------
 
       const byId = new Map(doc.nodes.map((n) => [n.id, n]));
@@ -480,8 +794,24 @@
       for (const child of doc.nodes) {
         const parent = child.parent_id && byId.get(child.parent_id);
         if (parent && heights[parent.id] !== undefined) {
-          edges.push(html`<path key=${child.id} d=${edgePath(parent, child, heights[parent.id])} />`);
+          edges.push(html`<path key=${child.id} d=${curve(parent.x + CARD_W / 2, parent.y + heights[parent.id], child.x + CARD_W / 2, child.y)} />`);
         }
+      }
+
+      // The node being written: a dashed outline where it will land, joined to its parent.
+      const ready = doc.status === 'ready';
+      const isEmpty = ready && doc.nodes.length === 0;
+      const composerParent = composer && composer.parentId ? byId.get(composer.parentId) : null;
+      const showGhost = composer && composer.x !== null && !isEmpty;
+      if (showGhost && composerParent && heights[composerParent.id] !== undefined) {
+        edges.push(html`<path key="draft" class="draft" d=${curve(composerParent.x + CARD_W / 2, composerParent.y + heights[composerParent.id], composer.x + CARD_W / 2, composer.y)} />`);
+      }
+
+      let composerLabel = '';
+      if (composer) {
+        if (isEmpty) composerLabel = 'Start a conversation';
+        else if (composer.mode === 'root') composerLabel = 'New conversation';
+        else if (composerParent) composerLabel = `${composer.mode === 'branch' ? 'Branch from' : 'Continue from'} “${snippet(composerParent.prompt)}”`;
       }
 
       // Dot grid follows pan and zoom; spacing widens when zoomed far out.
@@ -502,11 +832,7 @@
         overlay = html`<div class="notice"><div class="row"><${Spinner} label="Loading canvas…" /></div></div>`;
       } else if (doc.status === 'error') {
         overlay = html`<div class="notice bad"><strong>Could not load this canvas</strong>${doc.error}<br /><button onClick=${() => loadCanvas(canvasId)}>Retry</button></div>`;
-      } else if (doc.status === 'ready' && doc.nodes.length === 0) {
-        overlay = html`<div class="notice"><strong>This canvas is empty</strong>Starting a conversation from here is coming in the next unit.</div>`;
       }
-
-      const ready = doc.status === 'ready';
 
       return html`
         <div class="topbar">
@@ -521,6 +847,7 @@
             ${list.items.map((c) => html`<option key=${c.id} value=${c.id}>${c.title}</option>`)}
           </select>
           <button onClick=${onNewCanvas} disabled=${creating.busy || list.status !== 'ready'}>New canvas</button>
+          <button onClick=${onNewConversation} disabled=${!ready || isEmpty || (composer && composer.busy)}>New conversation</button>
           ${creating.busy && html`<${Spinner} label="Creating canvas…" />`}
           ${creating.error && html`
             <span class="inline-status bad">
@@ -548,9 +875,32 @@
         >
           <div class="world" style=${{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}>
             <svg class="edges" width="1" height="1">${edges}</svg>
-            ${doc.nodes.map((n) => html`<${Card} key=${n.id} node=${n} onHeight=${onHeight} />`)}
+            ${doc.nodes.map((n) => html`
+              <${Card}
+                key=${n.id}
+                node=${n}
+                isTarget=${!!composer && composer.parentId === n.id}
+                pendingSince=${n.status === 'pending' ? (pendingSince.current[n.id] || Date.parse(n.updated_at)) : null}
+                pollError=${pollErrors[n.id]}
+                retry=${retries[n.id]}
+                onHeight=${onHeight}
+                onContinue=${onContinue}
+                onBranch=${onBranch}
+                onRetry=${onRetry}
+              />`)}
+            ${showGhost && html`<div class="ghost" style=${{ left: composer.x + 'px', top: composer.y + 'px' }}>New node</div>`}
           </div>
           ${overlay && html`<div class="overlay">${overlay}</div>`}
+          ${ready && composer && html`
+            <${Composer}
+              composer=${composer}
+              label=${composerLabel}
+              centred=${isEmpty}
+              canCancel=${!isEmpty}
+              onChange=${(text) => setComposer((c) => (c ? { ...c, text } : c))}
+              onSend=${sendComposer}
+              onCancel=${() => setComposer(null)}
+            />`}
         </div>`;
     }
 

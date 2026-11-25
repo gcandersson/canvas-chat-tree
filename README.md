@@ -23,7 +23,7 @@ Coming in v0.1:
 - Several canvases, with a switcher
 - Optional password protection (HTTP Basic Auth)
 
-Available now: the JSON API (canvases, nodes, path assembly, the AI call, retry) and a read-only canvas: node cards, edges, pan, zoom, fit to screen and the canvas switcher. Writing prompts from the page is next.
+Available now: everything above except dragging nodes to rearrange them, which is next.
 
 ## Tech stack
 
