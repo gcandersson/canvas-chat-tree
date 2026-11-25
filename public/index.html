@@ -38,7 +38,8 @@
       --on-accent: #0f1115;
       --error: #f0787a;
       --ok: #6fd08c;
-      --highlight: #f2f4f8; /* active path */
+      --highlight: #6680ff; /* active path: the highlight blue, lifted a little for the dark background */
+      --highlight-glow: rgba(102, 128, 255, 0.55);
       --grid: #252a35;
       --grid-image: radial-gradient(circle, var(--grid) 1px, transparent 1.2px); /* dots */
       --edge: #4a5366;
@@ -112,6 +113,7 @@
       --error: #d92d2d;
       --ok: #1f9d55;
       --highlight: #4262ff;
+      --highlight-glow: rgba(66, 98, 255, 0.4);
       --grid: #e4e4e4;
       --grid-image:
         linear-gradient(to right, var(--grid) 1px, transparent 1px),
@@ -134,7 +136,7 @@
       --frame-line: #4262ff;
 
       /* The same 8 branch families: cool, clean tones for grey and white */
-      --branch-0: #2f80ed;
+      --branch-0: #5b6b8c;
       --branch-1: #12a594;
       --branch-2: #e0a100;
       --branch-3: #8e5ad6;
@@ -239,7 +241,7 @@
     .world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
     .edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
     .edges path { fill: none; stroke: var(--edge); stroke-width: 2.5; stroke-linecap: round; }
-    .edges path.active { stroke: var(--highlight) !important; stroke-width: 3.5; }
+    .edges path.active { stroke: var(--highlight) !important; stroke-width: 5; }
     .edges path.draft { stroke: var(--accent); stroke-dasharray: 6 6; opacity: 0.8; }
 
     /* Node cards */
@@ -256,7 +258,14 @@
     /* Rings are drawn with box-shadow so they never change the card's size. */
     .card.error { border-color: var(--error); box-shadow: 0 0 0 2px var(--error-ring), 0 4px 16px var(--shadow-1); }
     .card.reading { box-shadow: 0 0 0 2px var(--reading-ring), 0 4px 16px var(--shadow-1); }
-    .card.active { border-color: var(--highlight); box-shadow: 0 0 0 2px var(--highlight), 0 4px 16px var(--shadow-1); }
+    .card.active { border-color: var(--highlight); box-shadow: 0 0 0 1px var(--highlight), 0 0 20px 3px var(--highlight-glow), 0 4px 16px var(--shadow-1); }
+
+    /* While a path is selected, everything that is not on it steps back. */
+    .card, .sticky, .edges path, .edges line { transition: opacity 0.15s ease; }
+    .world.has-path .card:not(.active),
+    .world.has-path .sticky:not(.onpath),
+    .world.has-path .edges path:not(.active):not(.draft),
+    .world.has-path .edges line.tether:not(.onpath) { opacity: 0.45; }
     .card.target { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 4px 16px var(--shadow-1); }
     .card.dragging { z-index: 1; box-shadow: 0 10px 28px var(--shadow-3); }
     .card.dragging .card-head { cursor: grabbing; }
@@ -972,7 +981,7 @@
 
     // A sticky note. Plain text only. Double-click to edit, drag to move.
     // Everything in the bottom bar is a normal button and never starts a drag.
-    function Sticky({ sticky, x, y, isEditing, isDragging, save, removal, onHeight, onDragStart, onDragMove, onDragEnd, onEdit, onEndEdit, onInput, onColor, onAskDelete, onCancelDelete, onDelete, onRetrySave }) {
+    function Sticky({ sticky, x, y, isEditing, isDragging, onPath, save, removal, onHeight, onDragStart, onDragMove, onDragEnd, onEdit, onEndEdit, onInput, onColor, onAskDelete, onCancelDelete, onDelete, onRetrySave }) {
       const ref = useRef(null);
       const inputRef = useRef(null);
 
@@ -1029,7 +1038,7 @@
 
       return html`
         <div
-          class=${'sticky c-' + sticky.color + (isDragging ? ' dragging' : '')}
+          class=${'sticky c-' + sticky.color + (isDragging ? ' dragging' : '') + (onPath ? ' onpath' : '')}
           ref=${ref}
           style=${{ left: x + 'px', top: y + 'px' }}
           onPointerDown=${(e) => { if (!isEditing && !inBar(e)) onDragStart(e, sticky); }}
@@ -2393,7 +2402,7 @@
         if (rectsOverlap(cardRect, noteRect)) continue;
         const a = borderPoint(cardRect, noteRect.x + noteRect.w / 2, noteRect.y + noteRect.h / 2);
         const b = borderPoint(noteRect, cardRect.x + cardRect.w / 2, cardRect.y + cardRect.h / 2);
-        edges.push(html`<line key=${'tether-' + st.id} class="tether" style=${{ stroke: STICKY_LINE[st.color] || STICKY_LINE.yellow }} x1=${a.x} y1=${a.y} x2=${b.x} y2=${b.y} />`);
+        edges.push(html`<line key=${'tether-' + st.id} class=${'tether' + (activePath.has(node.id) ? ' onpath' : '')} style=${{ stroke: STICKY_LINE[st.color] || STICKY_LINE.yellow }} x1=${a.x} y1=${a.y} x2=${b.x} y2=${b.y} />`);
       }
 
       // The node being written: a dashed outline where it will land, joined to its parent.
@@ -2495,7 +2504,7 @@
           onPointerUp=${onPointerUp}
           onPointerCancel=${onPointerUp}
         >
-          <div class="world" style=${{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}>
+          <div class=${'world' + (activePath.size > 0 ? ' has-path' : '')} style=${{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}>
             <svg class="edges" width="1" height="1">${edges}</svg>
             ${visibleNodes.map((n) => html`
               <${Card}
@@ -2533,6 +2542,7 @@
                 y=${y}
                 isEditing=${editingSticky === st.id}
                 isDragging=${draggingSticky === st.id}
+                onPath=${!!st.node_id && activePath.has(st.node_id)}
                 save=${stickySaves[st.id]}
                 removal=${removals[st.id]}
                 onHeight=${onStickyHeight}
