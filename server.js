@@ -16,7 +16,8 @@ const MAX_PROMPT_CHARS = 20000;
 const SYSTEM_PROMPT =
   'The user is exploring ideas on a branching canvas, where each exchange is a node and any node ' +
   'can be branched in a new direction. You see only the path of exchanges leading to the current ' +
-  'prompt. Answer the latest prompt clearly and concisely, in plain text.';
+  'prompt. Answer the latest prompt clearly and concisely. You may use simple Markdown (bold, ' +
+  'headings, lists, code) where it helps; do not use tables or images.';
 
 // ---------------------------------------------------------------------------
 // Database

@@ -4,7 +4,8 @@
 A working, deployed first version: an infinite canvas where each AI exchange is a node card, conversations can branch from any node, and the AI answers using only the path to that node.
 
 ## Out of scope for v0.1
-Stickies, minimap, subtree collapse, projects panel, file uploads, streaming replies, multi-user accounts, deleting nodes, markdown rendering. (All go in the README roadmap.)
+Stickies, minimap, subtree collapse, projects panel, file uploads, streaming replies, multi-user accounts, deleting nodes. (All go in the README roadmap.)
+Markdown rendering was out of scope at first; basic sanitised markdown in replies (bold, headings, lists, code) was added in Unit 4 at Gustav's request.
 
 ## Data model
 canvases
@@ -69,7 +70,7 @@ Unit 2 — Canvas render: load a canvas, draw node cards and edges, pan, zoom to
   Verify on the live URL with the nodes from Unit 1.
 Unit 3 — Composer, Continue, Branch, pending and error states, retry.
   Verify: build a conversation with two branches from the same node, watch the pending timer, force an error (temporarily wrong model name in ASK_MODEL) and retry after fixing it.
-Unit 4 — Drag to move (persisted), README with screenshots, live demo note and roadmap. Rename this brief to __shipped.
+Unit 4 — Drag to move (persisted), basic markdown in replies, README with screenshots (invented demo content only), live demo note and roadmap. Rename this brief to __shipped.
   Verify: move a node, reload, it stays put; README renders on GitHub.
 
 ## README contents (written in Unit 0, completed in Unit 4)

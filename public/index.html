@@ -104,6 +104,28 @@
     }
     .card.error { border-color: var(--error); }
     .card.target { border-color: var(--accent); }
+    .card.dragging { z-index: 1; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55); }
+    .card.dragging .card-head { cursor: grabbing; }
+    .card-badge {
+      position: absolute;
+      left: 0;
+      bottom: 100%;
+      margin-bottom: 6px;
+      max-width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 8px;
+      font-size: 12px;
+      color: var(--muted);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      white-space: nowrap;
+    }
+    .card-badge.bad { color: var(--error); border-color: var(--error); }
+    .card-badge button { height: 22px; padding: 0 8px; font-size: 12px; }
+    .card-badge .inline-status { font-size: 12px; }
     .card-head {
       padding: 10px 12px;
       font-weight: 600;
@@ -112,6 +134,10 @@
       max-height: 96px;
       overflow-y: auto;
       border-bottom: 1px solid var(--border);
+      cursor: grab;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: none;
     }
     .card-body {
       padding: 10px 12px;
@@ -122,6 +148,38 @@
       color: #d3d7de;
     }
     .card-body.muted { color: var(--muted); }
+
+    /* Markdown in replies */
+    .md { white-space: normal; }
+    .md > :first-child { margin-top: 0; }
+    .md > :last-child { margin-bottom: 0; }
+    .md p { margin: 0 0 8px; }
+    .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 { margin: 12px 0 6px; line-height: 1.3; color: var(--text); }
+    .md h1 { font-size: 16px; }
+    .md h2 { font-size: 15px; }
+    .md h3, .md h4, .md h5, .md h6 { font-size: 14px; }
+    .md ul, .md ol { margin: 0 0 8px; padding-left: 22px; }
+    .md li { margin: 2px 0; }
+    .md li > p { margin: 0; }
+    .md strong { color: var(--text); }
+    .md a { color: var(--accent); }
+    .md code {
+      font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: #232833;
+      border-radius: 4px;
+      padding: 1px 4px;
+    }
+    .md pre {
+      margin: 0 0 8px;
+      padding: 8px 10px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+    .md pre code { background: none; padding: 0; white-space: pre; }
+    .md blockquote { margin: 0 0 8px; padding-left: 10px; border-left: 3px solid var(--border); color: var(--muted); }
+    .md hr { border: 0; border-top: 1px solid var(--border); margin: 10px 0; }
     .card-body.err { color: var(--error); }
     .card-note { padding: 0 12px 10px; color: var(--error); font-size: 13px; overflow-wrap: anywhere; }
     .card-note.soft { color: var(--muted); }
@@ -252,8 +310,11 @@
 
   <script type="module">
     import { h, render } from 'https://esm.sh/preact@10.25.4';
-    import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'https://esm.sh/preact@10.25.4/hooks';
+    import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'https://esm.sh/preact@10.25.4/hooks';
     import htm from 'https://esm.sh/htm@3.1.1';
+    // micromark is safe by default: raw HTML in the text is escaped and
+    // dangerous link protocols (javascript:, data:, ...) are dropped.
+    import { micromark } from 'https://esm.sh/micromark@4.0.0';
 
     const html = htm.bind(h);
 
@@ -273,6 +334,28 @@
       const one = text.replace(/\s+/g, ' ').trim();
       return one.length > max ? one.slice(0, max - 1) + '…' : one;
     };
+
+    // --- Markdown -----------------------------------------------------------
+
+    const escapeHtml = (text) => text.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+    // Reply text -> sanitised HTML. Images are dropped so a reply can never
+    // make the page fetch something from another site.
+    function renderMarkdown(text) {
+      try {
+        return micromark(text).replace(/<img\b[^>]*>/g, '');
+      } catch {
+        return `<p>${escapeHtml(text)}</p>`;
+      }
+    }
+
+    // Links in replies open in a new tab instead of replacing the canvas.
+    function onMarkdownClick(e) {
+      const link = e.target.closest('a');
+      if (!link) return;
+      e.preventDefault();
+      if (/^https?:/i.test(link.href)) window.open(link.href, '_blank', 'noopener,noreferrer');
+    }
 
     // --- Network ------------------------------------------------------------
 
@@ -304,8 +387,12 @@
       return html`<span class="inline-status"><span class="spin"></span>${label} ${seconds}s</span>`;
     }
 
-    function Card({ node, isTarget, pendingSince, pollError, retry, onHeight, onContinue, onBranch, onRetry }) {
+    function Card({ node, isTarget, isDragging, pendingSince, pollError, retry, move, onHeight, onContinue, onBranch, onRetry, onDragStart, onDragMove, onDragEnd, onSaveRetry }) {
       const ref = useRef(null);
+      const replyHtml = useMemo(
+        () => (node.status === 'done' && node.reply ? renderMarkdown(node.reply) : ''),
+        [node.status, node.reply]
+      );
 
       // Report the card's real height so edges can start at its bottom-centre.
       useLayoutEffect(() => {
@@ -335,7 +422,7 @@
             ${retry && retry.busy && html`<${Spinner} label="Retrying…" />`}
           </div>`;
       } else {
-        body = html`<div class="card-body scroll">${node.reply}</div>`;
+        body = html`<div class="card-body md scroll" onClick=${onMarkdownClick} dangerouslySetInnerHTML=${{ __html: replyHtml }}></div>`;
         actions = html`
           <div class="card-actions">
             <button onClick=${() => onContinue(node)} title="Add a follow-up directly below">Continue</button>
@@ -345,11 +432,25 @@
 
       return html`
         <div
-          class=${'card ' + node.status + (isTarget ? ' target' : '')}
+          class=${'card ' + node.status + (isTarget ? ' target' : '') + (isDragging ? ' dragging' : '')}
           ref=${ref}
           style=${{ left: node.x + 'px', top: node.y + 'px' }}
         >
-          <div class="card-head scroll">${node.prompt}</div>
+          ${move && html`
+            <div class=${'card-badge' + (move.error ? ' bad' : '')}>
+              ${move.busy
+                ? html`<${Spinner} label="Saving position…" />`
+                : html`<span class="clip" title=${move.error}>Position not saved: ${move.error}</span>
+                       <button onClick=${() => onSaveRetry(node.id)}>Retry</button>`}
+            </div>`}
+          <div
+            class="card-head scroll"
+            title="Drag to move"
+            onPointerDown=${(e) => onDragStart(e, node)}
+            onPointerMove=${onDragMove}
+            onPointerUp=${onDragEnd}
+            onPointerCancel=${onDragEnd}
+          >${node.prompt}</div>
           ${body}
           ${note}
           ${actions}
@@ -480,6 +581,8 @@
       const [composer, setComposer] = useState(null);
       const [retries, setRetries] = useState({});       // node id -> { busy, error }
       const [pollErrors, setPollErrors] = useState({}); // node id -> message
+      const [moves, setMoves] = useState({});           // node id -> { busy, error, x, y } while a position is being saved
+      const [draggingId, setDraggingId] = useState(null);
 
       const viewportRef = useRef(null);
       const loadSeq = useRef(0);
@@ -513,6 +616,7 @@
         setComposer(null);
         setRetries({});
         setPollErrors({});
+        setMoves({});
         try {
           const data = await api('/api/canvases/' + id);
           if (seq !== loadSeq.current) return; // a newer load has started
@@ -645,7 +749,7 @@
       const onPointerDown = (e) => {
         if (e.button !== 0 && e.button !== 1) return;
         if (e.target.closest('.card, .notice, .composer')) return;
-        e.currentTarget.setPointerCapture(e.pointerId);
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
         drag.current = { id: e.pointerId, lastX: e.clientX, lastY: e.clientY };
         setPanning(true);
       };
@@ -746,7 +850,8 @@
 
       const replaceNode = useCallback((fresh) => {
         setDoc((d) => (d.canvas && d.canvas.id === fresh.canvas_id
-          ? { ...d, nodes: d.nodes.map((n) => (n.id === fresh.id ? fresh : n)) }
+          // Keep the position shown here: the node may have been dragged since.
+          ? { ...d, nodes: d.nodes.map((n) => (n.id === fresh.id ? { ...fresh, x: n.x, y: n.y } : n)) }
           : d));
       }, []);
 
@@ -785,6 +890,60 @@
         } catch (err) {
           setRetries((r) => ({ ...r, [node.id]: { busy: false, error: err.message } }));
         }
+      };
+
+      // -- Drag a node by its header; save the position on release ------------
+
+      const nodeDrag = useRef(null);
+      const moveSeq = useRef({});
+
+      const savePosition = async (id, x, y) => {
+        const seq = (moveSeq.current[id] || 0) + 1;
+        moveSeq.current[id] = seq;
+        setMoves((m) => ({ ...m, [id]: { busy: true, error: null, x, y } }));
+        try {
+          await api('/api/nodes/' + id, { method: 'PATCH', body: JSON.stringify({ x, y }) });
+          if (moveSeq.current[id] !== seq) return; // moved again since
+          setMoves((m) => { const { [id]: _, ...rest } = m; return rest; });
+        } catch (err) {
+          if (moveSeq.current[id] !== seq) return;
+          setMoves((m) => ({ ...m, [id]: { busy: false, error: err.message, x, y } }));
+        }
+      };
+      const onSaveRetry = (id) => {
+        const failed = moves[id];
+        if (failed) savePosition(id, failed.x, failed.y);
+      };
+
+      const onDragStart = (e, node) => {
+        if (e.button !== 0) return;
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+        nodeDrag.current = {
+          id: node.id, pointerId: e.pointerId,
+          startX: e.clientX, startY: e.clientY,
+          origX: node.x, origY: node.y, x: node.x, y: node.y,
+          moved: false,
+        };
+      };
+      const onDragMove = (e) => {
+        const d = nodeDrag.current;
+        if (!d || d.pointerId !== e.pointerId) return;
+        const dx = e.clientX - d.startX;
+        const dy = e.clientY - d.startY;
+        // A small threshold so a plain click on the header does not count as a move.
+        if (!d.moved && Math.hypot(dx, dy) < 4) return;
+        if (!d.moved) { d.moved = true; setDraggingId(d.id); }
+        const k = viewRef.current.k;
+        d.x = Math.round(d.origX + dx / k);
+        d.y = Math.round(d.origY + dy / k);
+        setDoc((prev) => ({ ...prev, nodes: prev.nodes.map((n) => (n.id === d.id ? { ...n, x: d.x, y: d.y } : n)) }));
+      };
+      const onDragEnd = (e) => {
+        const d = nodeDrag.current;
+        if (!d || d.pointerId !== e.pointerId) return;
+        nodeDrag.current = null;
+        setDraggingId(null);
+        if (d.moved) savePosition(d.id, d.x, d.y);
       };
 
       // -- Render ------------------------------------------------------------
@@ -883,6 +1042,12 @@
                 pendingSince=${n.status === 'pending' ? (pendingSince.current[n.id] || Date.parse(n.updated_at)) : null}
                 pollError=${pollErrors[n.id]}
                 retry=${retries[n.id]}
+                move=${moves[n.id]}
+                isDragging=${draggingId === n.id}
+                onDragStart=${onDragStart}
+                onDragMove=${onDragMove}
+                onDragEnd=${onDragEnd}
+                onSaveRetry=${onSaveRetry}
                 onHeight=${onHeight}
                 onContinue=${onContinue}
                 onBranch=${onBranch}
