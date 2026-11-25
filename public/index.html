@@ -100,8 +100,8 @@
     .viewport.panning { cursor: grabbing; user-select: none; }
     .world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
     .edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
-    .edges path { fill: none; stroke: #4a5366; stroke-width: 2; stroke-linecap: round; }
-    .edges path.active { stroke: var(--highlight) !important; stroke-width: 3; }
+    .edges path { fill: none; stroke: #4a5366; stroke-width: 2.5; stroke-linecap: round; }
+    .edges path.active { stroke: var(--highlight) !important; stroke-width: 3.5; }
     .edges path.draft { stroke: var(--accent); stroke-dasharray: 6 6; opacity: 0.8; }
 
     /* Node cards */
@@ -110,13 +110,13 @@
       width: var(--card-w);
       background: var(--panel);
       /* --node is the card's accent colour (its branch family), set per card */
-      border: 1px solid var(--node, var(--border));
+      border: 2px solid var(--node, var(--border));
       border-radius: 10px;
       box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
       cursor: default;
     }
     /* Rings are drawn with box-shadow so they never change the card's size. */
-    .card.error { border-color: var(--error); box-shadow: 0 0 0 1px var(--error), 0 4px 16px rgba(0, 0, 0, 0.35); }
+    .card.error { border-color: var(--error); box-shadow: 0 0 0 2px rgba(240, 120, 122, 0.35), 0 4px 16px rgba(0, 0, 0, 0.35); }
     .card.reading { box-shadow: 0 0 0 2px rgba(122, 162, 247, 0.55), 0 4px 16px rgba(0, 0, 0, 0.35); }
     .card.active { border-color: var(--highlight); box-shadow: 0 0 0 2px var(--highlight), 0 4px 16px rgba(0, 0, 0, 0.35); }
     .card.target { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 4px 16px rgba(0, 0, 0, 0.35); }
@@ -150,9 +150,10 @@
       max-height: 96px;
       overflow-y: auto;
       border-bottom: 1px solid var(--border);
-      border-radius: 9px 9px 0 0;
-      /* a faint wash of the accent colour, so a branch family reads at a glance */
-      background: color-mix(in srgb, var(--node, transparent) 12%, transparent);
+      border-radius: 8px 8px 0 0;
+      /* a wash of the accent colour, so a branch family reads at a glance */
+      background: color-mix(in srgb, var(--node, transparent) 26%, var(--panel));
+      border-bottom-color: color-mix(in srgb, var(--node, var(--border)) 45%, var(--border));
       cursor: grab;
       user-select: none;
       -webkit-user-select: none;
