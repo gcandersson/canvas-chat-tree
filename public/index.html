@@ -191,6 +191,7 @@
       border-top: 1px solid var(--border);
     }
     .card-actions button { height: 28px; padding: 2px 10px; font-size: 13px; }
+    .card-actions .push { margin-left: auto; }
     .scroll { scrollbar-width: thin; scrollbar-color: #3b4252 transparent; }
 
     /* Where the node being written will land */
@@ -249,6 +250,68 @@
     .composer-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
     .composer-row .hint { color: var(--muted); font-size: 12px; }
     .composer-error { color: var(--error); margin-top: 8px; overflow-wrap: anywhere; }
+
+    /* Reader panel: one node's full prompt and reply, beside the canvas */
+    .reader {
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: min(480px, 100%);
+      display: flex;
+      flex-direction: column;
+      background: var(--panel);
+      border-left: 1px solid #3b4252;
+      box-shadow: -10px 0 32px rgba(0, 0, 0, 0.45);
+      cursor: default;
+      z-index: 2;
+    }
+    .reader-bar {
+      flex: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .reader-bar .name { font-weight: 600; color: var(--muted); }
+    .reader-bar button { height: 28px; padding: 2px 10px; font-size: 13px; flex: none; }
+    .reader-bar .close { width: 28px; padding: 0; font-size: 16px; line-height: 1; }
+    .reader-scroll { flex: 1; overflow-y: auto; padding: 16px 20px 28px; }
+    .reader-label {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin: 0 0 6px;
+      font-size: 12px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .reader-label small { text-transform: none; letter-spacing: 0; }
+    .reader-prompt {
+      margin: 0 0 20px;
+      padding: 10px 12px;
+      font-weight: 600;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .reader-reply { font-size: 15px; line-height: 1.6; overflow-wrap: anywhere; color: #d3d7de; }
+    .reader-reply.md h1 { font-size: 20px; }
+    .reader-reply.md h2 { font-size: 17px; }
+    .reader-reply.md h3, .reader-reply.md h4, .reader-reply.md h5, .reader-reply.md h6 { font-size: 15px; }
+    .reader-reply.md p, .reader-reply.md ul, .reader-reply.md ol, .reader-reply.md pre, .reader-reply.md blockquote { margin-bottom: 12px; }
+    .reader-reply.md code { font-size: 13.5px; }
+    .reader-error { color: var(--error); white-space: pre-wrap; overflow-wrap: anywhere; margin-bottom: 12px; }
+    .reader-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--muted); }
+    .card.reading { box-shadow: 0 0 0 2px rgba(122, 162, 247, 0.55), 0 4px 16px rgba(0, 0, 0, 0.35); }
+    /* With the reader open on a wide screen, the composer centres in the space that is left. */
+    @media (min-width: 1000px) {
+      .viewport.reader-open .composer:not(.centred) { left: calc((100% - 480px) / 2); }
+    }
 
     /* Centre overlay: loading, error and empty states */
     .overlay {
@@ -328,6 +391,9 @@
     const GHOST_H = 120;       // height of the "new node lands here" outline
     const NEW_CARD_H = 260;    // assumed height of a not-yet-created card, for overlap checks
     const POLL_MS = 1500;
+    const READER_W = 480;      // width of the reader panel
+    const READER_WIDE = 1000;  // from this window width, reader and composer fit side by side
+    const DRAG_THRESHOLD = 5;  // a press that moves less than this many pixels is a click, not a drag
 
     const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
     const snippet = (text, max = 60) => {
@@ -387,7 +453,7 @@
       return html`<span class="inline-status"><span class="spin"></span>${label} ${seconds}s</span>`;
     }
 
-    function Card({ node, liveText, isTarget, isDragging, pendingSince, pollError, retry, move, onHeight, onContinue, onBranch, onRetry, onDragStart, onDragMove, onDragEnd, onSaveRetry }) {
+    function Card({ node, liveText, isTarget, isDragging, isReading, pendingSince, pollError, retry, move, onHeight, onContinue, onBranch, onRetry, onExpand, onDragStart, onDragMove, onDragEnd, onSaveRetry }) {
       const ref = useRef(null);
       const bodyRef = useRef(null);
       const stickToBottom = useRef(true);
@@ -422,11 +488,12 @@
       let body;
       let note = null;
       let actions = null;
+      const expand = html`<button class="push" onClick=${() => onExpand(node)} title="Read the full prompt and reply in a side panel">Expand</button>`;
 
       if (node.status === 'pending') {
         if (text) {
           body = html`<div class="card-body md scroll" ref=${bodyRef} onScroll=${onBodyScroll} onClick=${onMarkdownClick} dangerouslySetInnerHTML=${{ __html: replyHtml }}></div>`;
-          actions = html`<div class="card-actions"><${Spinner} label="Writing…" since=${pendingSince} /></div>`;
+          actions = html`<div class="card-actions"><${Spinner} label="Writing…" since=${pendingSince} />${expand}</div>`;
         } else {
           body = html`<div class="card-body muted"><${Spinner} label="Thinking…" since=${pendingSince} /></div>`;
         }
@@ -440,6 +507,7 @@
           <div class="card-actions">
             <button class="primary" disabled=${retry && retry.busy} onClick=${() => onRetry(node)}>Retry</button>
             ${retry && retry.busy && html`<${Spinner} label="Retrying…" />`}
+            ${expand}
           </div>`;
       } else {
         body = html`<div class="card-body md scroll" onClick=${onMarkdownClick} dangerouslySetInnerHTML=${{ __html: replyHtml }}></div>`;
@@ -447,12 +515,13 @@
           <div class="card-actions">
             <button onClick=${() => onContinue(node)} title="Add a follow-up directly below">Continue</button>
             <button onClick=${() => onBranch(node)} title="Start a second direction from this node">Branch</button>
+            ${expand}
           </div>`;
       }
 
       return html`
         <div
-          class=${'card ' + node.status + (isTarget ? ' target' : '') + (isDragging ? ' dragging' : '')}
+          class=${'card ' + node.status + (isTarget ? ' target' : '') + (isDragging ? ' dragging' : '') + (isReading ? ' reading' : '')}
           ref=${ref}
           style=${{ left: node.x + 'px', top: node.y + 'px' }}
         >
@@ -475,6 +544,85 @@
           ${note}
           ${actions}
         </div>`;
+    }
+
+    // Copy text to the clipboard; falls back to the old selection trick where
+    // the Clipboard API is not available.
+    async function copyText(text) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return;
+      } catch { /* try the fallback */ }
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      if (!ok) throw new Error('The browser blocked copying.');
+    }
+
+    function Reader({ node, liveText, pendingSince, retry, onClose, onContinue, onBranch, onRetry }) {
+      const [copy, setCopy] = useState({ state: 'idle', error: null }); // idle | busy | done | failed
+      const copyTimer = useRef(null);
+      useEffect(() => () => clearTimeout(copyTimer.current), []);
+      // A different node in the panel starts with a fresh Copy button.
+      useEffect(() => { clearTimeout(copyTimer.current); setCopy({ state: 'idle', error: null }); }, [node.id]);
+
+      const text = node.status === 'done' ? node.reply
+        : node.status === 'pending' ? (liveText || node.reply || '')
+        : '';
+      const replyHtml = useMemo(() => (text ? renderMarkdown(text) : ''), [text]);
+
+      const onCopy = async () => {
+        clearTimeout(copyTimer.current);
+        setCopy({ state: 'busy', error: null });
+        try {
+          await copyText(node.reply);
+          setCopy({ state: 'done', error: null });
+          copyTimer.current = setTimeout(() => setCopy({ state: 'idle', error: null }), 2000);
+        } catch (err) {
+          setCopy({ state: 'failed', error: err.message });
+        }
+      };
+      const copyLabel = copy.state === 'busy' ? 'Copying…' : copy.state === 'done' ? 'Copied' : copy.state === 'failed' ? 'Copy failed · Retry' : 'Copy';
+
+      const done = node.status === 'done';
+      let reply;
+      if (node.status === 'error') {
+        reply = html`
+          <div class="reader-error">${node.error || 'The AI call failed.'}</div>
+          ${retry && retry.error && html`<div class="reader-error">Retry failed: ${retry.error}</div>`}
+          <div class="reader-foot">
+            <button class="primary" disabled=${retry && retry.busy} onClick=${() => onRetry(node)}>Retry</button>
+            ${retry && retry.busy && html`<${Spinner} label="Retrying…" />`}
+          </div>`;
+      } else if (!text) {
+        reply = html`<div class="reader-foot"><${Spinner} label="Thinking…" since=${pendingSince} /></div>`;
+      } else {
+        reply = html`
+          <div class="reader-reply md" onClick=${onMarkdownClick} dangerouslySetInnerHTML=${{ __html: replyHtml }}></div>
+          ${!done && html`<div class="reader-foot"><${Spinner} label="Writing…" since=${pendingSince} /></div>`}`;
+      }
+
+      return html`
+        <aside class="reader" aria-label="Reader panel">
+          <div class="reader-bar">
+            <span class="name">Reader</span>
+            <span class="spacer"></span>
+            <button disabled=${!done || copy.state === 'busy'} onClick=${onCopy} title=${copy.error || 'Copy the reply as Markdown'}>${copyLabel}</button>
+            <button disabled=${!done} onClick=${() => onContinue(node)} title="Add a follow-up directly below">Continue</button>
+            <button disabled=${!done} onClick=${() => onBranch(node)} title="Start a second direction from this node">Branch</button>
+            <button class="close" onClick=${onClose} aria-label="Close reader" title="Close (Esc)">×</button>
+          </div>
+          <div class="reader-scroll scroll">
+            <div class="reader-label">Prompt</div>
+            <div class="reader-prompt">${node.prompt}</div>
+            <div class="reader-label">Reply ${node.model && html`<small>${node.model}</small>`}</div>
+            ${reply}
+          </div>
+        </aside>`;
     }
 
     function Composer({ composer, label, centred, canCancel, onChange, onSend, onCancel }) {
@@ -604,6 +752,7 @@
       const [moves, setMoves] = useState({});           // node id -> { busy, error, x, y } while a position is being saved
       const [draggingId, setDraggingId] = useState(null);
       const [liveText, setLiveText] = useState({});     // node id -> reply text received over the stream so far
+      const [readerId, setReaderId] = useState(null);   // node shown in the reader panel
       const [streamTick, setStreamTick] = useState(0);  // bumped when a node drops from streaming to polling
 
       const viewportRef = useRef(null);
@@ -618,6 +767,8 @@
       const flushTimer = useRef(null);
       const viewRef = useRef(view);
       viewRef.current = view;
+      const readerOpenRef = useRef(false);
+      readerOpenRef.current = readerId !== null;
       const nodesRef = useRef(doc.nodes);
       nodesRef.current = doc.nodes;
 
@@ -643,6 +794,7 @@
         setRetries({});
         setPollErrors({});
         setMoves({});
+        setReaderId(null);
         setLiveText({});
         liveBuffer.current = {};
         noStream.current = new Set();
@@ -710,6 +862,8 @@
         const rect = viewportRef.current.getBoundingClientRect();
         const pad = 24;
         const usableBottom = Math.max(rect.height * 0.4, rect.height - 240);
+        // An open reader panel covers the right side of the screen.
+        const usableRight = readerOpenRef.current && rect.width >= READER_WIDE ? rect.width - READER_W : rect.width;
         setView((v) => {
           const left = v.x + x * v.k;
           const top = v.y + y * v.k;
@@ -717,7 +871,7 @@
           const bottom = top + hgt * v.k;
           let dx = 0;
           let dy = 0;
-          if (right > rect.width - pad) dx = rect.width - pad - right;
+          if (right > usableRight - pad) dx = usableRight - pad - right;
           if (left + dx < pad) dx = pad - left;
           if (bottom > usableBottom - pad) dy = usableBottom - pad - bottom;
           if (top + dy < pad) dy = pad - top;
@@ -745,7 +899,9 @@
         const onWheel = (e) => {
           // Trackpad pinch arrives as a wheel event with ctrlKey set.
           const pinch = e.ctrlKey || e.metaKey;
-          if (!pinch && (e.target.closest('.composer') || scrollableUnder(e.target, vp))) return;
+          // Panels scroll by themselves; a pinch over them does nothing rather than zoom the page.
+          if (e.target.closest('.composer, .reader')) { if (pinch) e.preventDefault(); return; }
+          if (!pinch && scrollableUnder(e.target, vp)) return;
           e.preventDefault();
           let dy = e.deltaY;
           if (e.deltaMode === 1) dy *= 16;
@@ -777,7 +933,7 @@
       const drag = useRef(null);
       const onPointerDown = (e) => {
         if (e.button !== 0 && e.button !== 1) return;
-        if (e.target.closest('.card, .notice, .composer')) return;
+        if (e.target.closest('.card, .notice, .composer, .reader')) return;
         try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
         drag.current = { id: e.pointerId, lastX: e.clientX, lastY: e.clientY };
         setPanning(true);
@@ -844,6 +1000,29 @@
       const onContinue = (node) => openComposer('continue', node);
       const onBranch = (node) => openComposer('branch', node);
       const onNewConversation = () => openComposer('root', null);
+
+      // -- Reader panel -------------------------------------------------------
+
+      const onExpand = (node) => setReaderId((current) => (current === node.id ? null : node.id));
+      // Continue and Branch from the reader do exactly what the card's buttons do.
+      // On a narrow window the panel would cover the composer, so it closes first.
+      const fromReader = (mode) => (node) => {
+        if (viewportRef.current.getBoundingClientRect().width < READER_WIDE) {
+          readerOpenRef.current = false;
+          setReaderId(null);
+        }
+        openComposer(mode, node);
+      };
+
+      // Esc closes the reader, unless something else (the composer) already used the key.
+      useEffect(() => {
+        if (readerId === null) return;
+        const onKey = (e) => {
+          if (e.key === 'Escape' && !e.defaultPrevented) setReaderId(null);
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+      }, [readerId]);
 
       // An empty canvas always shows the composer, centred.
       useEffect(() => {
@@ -1032,7 +1211,7 @@
         const dx = e.clientX - d.startX;
         const dy = e.clientY - d.startY;
         // A small threshold so a plain click on the header does not count as a move.
-        if (!d.moved && Math.hypot(dx, dy) < 4) return;
+        if (!d.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
         if (!d.moved) { d.moved = true; setDraggingId(d.id); }
         const k = viewRef.current.k;
         d.x = Math.round(d.origX + dx / k);
@@ -1062,6 +1241,7 @@
       const ready = doc.status === 'ready';
       const isEmpty = ready && doc.nodes.length === 0;
       const composerParent = composer && composer.parentId ? byId.get(composer.parentId) : null;
+      const readerNode = readerId ? byId.get(readerId) : null;
       const showGhost = composer && composer.x !== null && !isEmpty;
       if (showGhost && composerParent && heights[composerParent.id] !== undefined) {
         edges.push(html`<path key="draft" class="draft" d=${curve(composerParent.x + CARD_W / 2, composerParent.y + heights[composerParent.id], composer.x + CARD_W / 2, composer.y)} />`);
@@ -1125,7 +1305,7 @@
         </div>
 
         <div
-          class=${'viewport' + (panning ? ' panning' : '')}
+          class=${'viewport' + (panning ? ' panning' : '') + (readerNode ? ' reader-open' : '')}
           ref=${viewportRef}
           style=${viewportStyle}
           onPointerDown=${onPointerDown}
@@ -1140,6 +1320,8 @@
                 key=${n.id}
                 node=${n}
                 liveText=${liveText[n.id]}
+                isReading=${readerId === n.id}
+                onExpand=${onExpand}
                 isTarget=${!!composer && composer.parentId === n.id}
                 pendingSince=${n.status === 'pending' ? (pendingSince.current[n.id] || Date.parse(n.updated_at)) : null}
                 pollError=${pollErrors[n.id]}
@@ -1167,6 +1349,17 @@
               onChange=${(text) => setComposer((c) => (c ? { ...c, text } : c))}
               onSend=${sendComposer}
               onCancel=${() => setComposer(null)}
+            />`}
+          ${ready && readerNode && html`
+            <${Reader}
+              node=${readerNode}
+              liveText=${liveText[readerNode.id]}
+              pendingSince=${readerNode.status === 'pending' ? (pendingSince.current[readerNode.id] || Date.parse(readerNode.updated_at)) : null}
+              retry=${retries[readerNode.id]}
+              onClose=${() => setReaderId(null)}
+              onContinue=${fromReader('continue')}
+              onBranch=${fromReader('branch')}
+              onRetry=${onRetry}
             />`}
         </div>`;
     }
