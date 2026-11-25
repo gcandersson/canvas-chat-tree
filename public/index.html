@@ -215,6 +215,46 @@
     .card-actions .icon { width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
     .scroll { scrollbar-width: thin; scrollbar-color: #3b4252 transparent; }
 
+    /* Collapse toggle: a pill on the card's bottom edge, where its children hang from */
+    .fold {
+      position: absolute;
+      left: 50%;
+      bottom: -12px;
+      transform: translateX(-50%);
+      z-index: 1;
+      height: 22px;
+      padding: 0 9px;
+      font-size: 11px;
+      line-height: 1;
+      border-radius: 11px;
+      background: var(--panel-2);
+      border: 1px solid var(--node, var(--border));
+      color: var(--muted);
+    }
+    .fold:hover:not(:disabled) { color: var(--text); border-color: var(--node, #3b4252); }
+    .fold.closed { background: var(--node, var(--accent)); border-color: var(--node, var(--accent)); color: #0f1115; font-weight: 700; }
+    .fold.closed:hover:not(:disabled) { background: var(--node, var(--accent)); color: #0f1115; filter: brightness(1.12); }
+
+    /* Minimap */
+    .minimap {
+      position: absolute;
+      right: 16px;
+      bottom: 16px;
+      width: 200px;
+      height: 140px;
+      z-index: 1;
+      overflow: hidden;
+      background: rgba(23, 26, 33, 0.94);
+      border: 1px solid #3b4252;
+      border-radius: 8px;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+      cursor: crosshair;
+      touch-action: none;
+    }
+    .minimap svg { display: block; width: 100%; height: 100%; }
+    .minimap .frame { fill: rgba(255, 255, 255, 0.07); stroke: #e6e8ec; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    @media (max-width: 700px) { .minimap { display: none; } }
+
     /* Sticky notes */
     .sticky {
       --s-bg: #453f22;
@@ -330,7 +370,7 @@
       box-shadow: 0 10px 32px rgba(0, 0, 0, 0.5);
       padding: 12px;
       cursor: default;
-      z-index: 1;
+      z-index: 2;
     }
     .composer.centred { bottom: auto; top: 50%; transform: translate(-50%, -50%); }
     .composer-label {
@@ -372,7 +412,7 @@
       border-left: 1px solid #3b4252;
       box-shadow: -10px 0 32px rgba(0, 0, 0, 0.45);
       cursor: default;
-      z-index: 2;
+      z-index: 3;
     }
     .reader-bar {
       flex: none;
@@ -564,7 +604,7 @@
       return html`<span class="inline-status"><span class="spin"></span>${label} ${seconds}s</span>`;
     }
 
-    function Card({ node, colour, isActive, liveText, isTarget, isDragging, isReading, pendingSince, pollError, retry, move, onHeight, onContinue, onBranch, onRetry, onExpand, onAddSticky, onDragStart, onDragMove, onDragEnd, onSaveRetry }) {
+    function Card({ node, colour, isActive, liveText, isTarget, isDragging, isReading, pendingSince, pollError, retry, move, onHeight, onContinue, onBranch, onRetry, onExpand, onAddSticky, descendants, isCollapsed, onToggleCollapse, onDragStart, onDragMove, onDragEnd, onSaveRetry }) {
       const ref = useRef(null);
       const bodyRef = useRef(null);
       const stickToBottom = useRef(true);
@@ -662,6 +702,79 @@
           ${body}
           ${note}
           ${actions}
+          ${descendants > 0 && html`
+            <button
+              class=${'fold' + (isCollapsed ? ' closed' : '')}
+              onClick=${() => onToggleCollapse(node.id)}
+              title=${isCollapsed
+                ? `Show the ${descendants} hidden ${descendants === 1 ? 'node' : 'nodes'} below`
+                : `Hide the ${descendants} ${descendants === 1 ? 'node' : 'nodes'} below`}
+              aria-expanded=${!isCollapsed}
+            >${isCollapsed ? '+' + descendants : '▾ ' + descendants}</button>`}
+        </div>`;
+    }
+
+    // Overview of the whole canvas. Cards are blocks in their branch colours,
+    // the frame is what is on screen. Click or drag to move the view there.
+    function Minimap({ blocks, view, size, onMove }) {
+      const ref = useRef(null);
+      const frozenRef = useRef(null);
+      const [frozen, setFrozen] = useState(null);
+
+      // What is on screen, in canvas coordinates.
+      const frame = { x: -view.x / view.k, y: -view.y / view.k, w: size.w / view.k, h: size.h / view.k };
+
+      // The map always covers every block and the frame, with a little margin.
+      let minX = frame.x, minY = frame.y, maxX = frame.x + frame.w, maxY = frame.y + frame.h;
+      for (const b of blocks) {
+        minX = Math.min(minX, b.x);
+        minY = Math.min(minY, b.y);
+        maxX = Math.max(maxX, b.x + b.w);
+        maxY = Math.max(maxY, b.y + b.h);
+      }
+      const margin = Math.max(maxX - minX, maxY - minY) * 0.04;
+      const live = { x: minX - margin, y: minY - margin, w: Math.max(1, maxX - minX + margin * 2), h: Math.max(1, maxY - minY + margin * 2) };
+      // While dragging, the map's extent is frozen. Otherwise it would rescale
+      // under the pointer as the frame moves, and the view would run away.
+      const bounds = frozen || live;
+
+      const toCanvas = (e, bb) => {
+        const r = ref.current.getBoundingClientRect();
+        const scale = Math.min(r.width / bb.w, r.height / bb.h);
+        const offsetX = (r.width - bb.w * scale) / 2;
+        const offsetY = (r.height - bb.h * scale) / 2;
+        return { x: bb.x + (e.clientX - r.left - offsetX) / scale, y: bb.y + (e.clientY - r.top - offsetY) / scale };
+      };
+      const onDown = (e) => {
+        if (e.button !== 0) return;
+        e.stopPropagation();
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+        frozenRef.current = live;
+        setFrozen(live);
+        onMove(toCanvas(e, live));
+      };
+      const onDrag = (e) => {
+        if (frozenRef.current) onMove(toCanvas(e, frozenRef.current));
+      };
+      const onUp = () => {
+        frozenRef.current = null;
+        setFrozen(null);
+      };
+
+      return html`
+        <div
+          class="minimap"
+          ref=${ref}
+          title="Click or drag to move the view"
+          onPointerDown=${onDown}
+          onPointerMove=${onDrag}
+          onPointerUp=${onUp}
+          onPointerCancel=${onUp}
+        >
+          <svg viewBox=${`${bounds.x} ${bounds.y} ${bounds.w} ${bounds.h}`} preserveAspectRatio="xMidYMid meet">
+            ${blocks.map((b) => html`<rect key=${b.key} x=${b.x} y=${b.y} width=${b.w} height=${b.h} rx=${b.w * 0.04} fill=${b.fill} opacity=${b.opacity} />`)}
+            <rect class="frame" x=${frame.x} y=${frame.y} width=${frame.w} height=${frame.h} />
+          </svg>
         </div>`;
     }
 
@@ -908,6 +1021,62 @@
       return colour;
     }
 
+    // --- Collapse -----------------------------------------------------------
+
+    // For every node: its children and how many descendants it has in total.
+    function treeInfo(nodes) {
+      const childrenOf = new Map();
+      for (const n of nodes) {
+        if (!n.parent_id) continue;
+        if (!childrenOf.has(n.parent_id)) childrenOf.set(n.parent_id, []);
+        childrenOf.get(n.parent_id).push(n.id);
+      }
+      const descendants = new Map();
+      const count = (id) => {
+        if (descendants.has(id)) return descendants.get(id);
+        descendants.set(id, 0); // guards against a cycle in bad data
+        let total = 0;
+        for (const child of childrenOf.get(id) || []) total += 1 + count(child);
+        descendants.set(id, total);
+        return total;
+      };
+      for (const n of nodes) count(n.id);
+      return { childrenOf, descendants };
+    }
+
+    // Collapsing a node hides its descendants only: never the node itself,
+    // its siblings, its ancestors or its parent's other children.
+    function hiddenNodes(collapsed, childrenOf) {
+      const hidden = new Set();
+      for (const id of collapsed) {
+        const stack = [...(childrenOf.get(id) || [])];
+        while (stack.length) {
+          const next = stack.pop();
+          if (hidden.has(next)) continue;
+          hidden.add(next);
+          stack.push(...(childrenOf.get(next) || []));
+        }
+      }
+      return hidden;
+    }
+
+    // Collapse state lives in this browser only, one entry per canvas.
+    const collapseKey = (canvasId) => 'canvas-chat-tree:collapsed:' + canvasId;
+    function loadCollapsed(canvasId) {
+      try {
+        const ids = JSON.parse(localStorage.getItem(collapseKey(canvasId)) || '[]');
+        return new Set(Array.isArray(ids) ? ids : []);
+      } catch {
+        return new Set();
+      }
+    }
+    function saveCollapsed(canvasId, collapsed) {
+      try {
+        if (collapsed.size === 0) localStorage.removeItem(collapseKey(canvasId));
+        else localStorage.setItem(collapseKey(canvasId), JSON.stringify([...collapsed]));
+      } catch { /* storage unavailable: collapse still works until reload */ }
+    }
+
     // The active path: a node plus all its ancestors back to the root.
     function pathTo(id, byId) {
       const path = new Set();
@@ -1025,6 +1194,8 @@
       const [liveText, setLiveText] = useState({});     // node id -> reply text received over the stream so far
       const [readerId, setReaderId] = useState(null);   // node shown in the reader panel
       const [selectedId, setSelectedId] = useState(null); // node whose path to the root is highlighted
+      const [collapsed, setCollapsed] = useState(() => new Set()); // node ids whose descendants are hidden
+      const [vpSize, setVpSize] = useState({ w: 0, h: 0 });        // viewport size, for the minimap
       const [stickyHeights, setStickyHeights] = useState({});
       const [editingSticky, setEditingSticky] = useState(null);   // sticky id being edited
       const [draggingSticky, setDraggingSticky] = useState(null);
@@ -1089,6 +1260,7 @@
           const data = await api('/api/canvases/' + id);
           if (seq !== loadSeq.current) return; // a newer load has started
           fitWhenMeasured.current = true;
+          setCollapsed(loadCollapsed(id));
           setDoc({ status: 'ready', canvas: data.canvas, nodes: data.nodes, stickies: data.stickies || [], error: null });
         } catch (err) {
           if (seq !== loadSeq.current) return;
@@ -1128,18 +1300,51 @@
       const fit = useCallback(() => {
         const rect = viewportRef.current.getBoundingClientRect();
         const byId = new Map(doc.nodes.map((n) => [n.id, n]));
-        const stickyRects = doc.stickies.map((st) => ({ ...stickyPosition(st, byId), w: STICKY_W, h: stickyHeights[st.id] || 120 }));
-        setView(fitView(doc.nodes, heights, rect.width, rect.height, stickyRects));
-      }, [doc.nodes, doc.stickies, heights, stickyHeights]);
+        // Only what is on show counts: collapsed-away nodes and their stickies are left out.
+        const hidden = hiddenNodes(collapsed, treeInfo(doc.nodes).childrenOf);
+        const shown = doc.nodes.filter((n) => !hidden.has(n.id));
+        const stickyRects = doc.stickies
+          .filter((st) => !(st.node_id && hidden.has(st.node_id)))
+          .map((st) => ({ ...stickyPosition(st, byId), w: STICKY_W, h: stickyHeights[st.id] || 120 }));
+        setView(fitView(shown, heights, rect.width, rect.height, stickyRects));
+      }, [doc.nodes, doc.stickies, heights, stickyHeights, collapsed]);
 
       // Fit once after a canvas loads, as soon as every card has been measured.
       useEffect(() => {
         if (!fitWhenMeasured.current || doc.status !== 'ready') return;
-        if (doc.nodes.every((n) => heights[n.id] !== undefined)) {
+        const hidden = hiddenNodes(collapsed, treeInfo(doc.nodes).childrenOf);
+        if (doc.nodes.every((n) => hidden.has(n.id) || heights[n.id] !== undefined)) {
           fitWhenMeasured.current = false;
           fit();
         }
-      }, [doc, heights, fit]);
+      }, [doc, heights, fit, collapsed]);
+
+      // Collapse or expand one node, and remember it for this canvas in this browser.
+      const toggleCollapse = (id) => {
+        setCollapsed((prev) => {
+          const next = new Set(prev);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          if (doc.canvas) saveCollapsed(doc.canvas.id, next);
+          return next;
+        });
+      };
+
+      // Track the viewport's size (the minimap needs it to draw what is on screen).
+      useLayoutEffect(() => {
+        const el = viewportRef.current;
+        const measure = () => setVpSize((prev) => (prev.w === el.clientWidth && prev.h === el.clientHeight ? prev : { w: el.clientWidth, h: el.clientHeight }));
+        measure();
+        const ro = new ResizeObserver(measure);
+        ro.observe(el);
+        return () => ro.disconnect();
+      }, []);
+
+      // Minimap: put the given canvas point at the centre of the screen.
+      const centreOn = useCallback((point) => {
+        const el = viewportRef.current;
+        setView((v) => ({ ...v, x: el.clientWidth / 2 - point.x * v.k, y: el.clientHeight / 2 - point.y * v.k }));
+      }, []);
 
       const onHeight = useCallback((id, value) => {
         setHeights((prev) => (prev[id] === value ? prev : { ...prev, [id]: value }));
@@ -1192,7 +1397,7 @@
           // Trackpad pinch arrives as a wheel event with ctrlKey set.
           const pinch = e.ctrlKey || e.metaKey;
           // Panels scroll by themselves; a pinch over them does nothing rather than zoom the page.
-          if (e.target.closest('.composer, .reader')) { if (pinch) e.preventDefault(); return; }
+          if (e.target.closest('.composer, .reader, .minimap')) { if (pinch) e.preventDefault(); return; }
           if (!pinch && scrollableUnder(e.target, vp)) return;
           e.preventDefault();
           let dy = e.deltaY;
@@ -1225,7 +1430,7 @@
       const drag = useRef(null);
       const onPointerDown = (e) => {
         if (e.button !== 0 && e.button !== 1) return;
-        if (e.target.closest('.card, .sticky, .notice, .composer, .reader')) return;
+        if (e.target.closest('.card, .sticky, .notice, .composer, .reader, .minimap')) return;
         try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
         drag.current = { id: e.pointerId, startX: e.clientX, startY: e.clientY, lastX: e.clientX, lastY: e.clientY, moved: false };
       };
@@ -1349,6 +1554,8 @@
             body: JSON.stringify({ parent_id: composer.parentId, prompt, x: pos.x, y: pos.y }),
           });
           pendingSince.current[node.id] = Date.now();
+          // A new child under a collapsed node would be created out of sight: open the node.
+          if (node.parent_id && collapsed.has(node.parent_id)) toggleCollapse(node.parent_id);
           setDoc((d) => (d.canvas && d.canvas.id === targetCanvas ? { ...d, nodes: [...d.nodes, node] } : d));
           setList((l) => ({ ...l, items: l.items.map((c) => (c.id === targetCanvas ? { ...c, node_count: c.node_count + 1 } : c)) }));
           setComposer((c) => (c && c.key === key ? null : c));
@@ -1695,13 +1902,16 @@
 
       const byId = new Map(doc.nodes.map((n) => [n.id, n]));
       const colours = branchColours(doc.nodes);
+      const tree = treeInfo(doc.nodes);
+      const hidden = hiddenNodes(collapsed, tree.childrenOf);
+      const visibleNodes = doc.nodes.filter((n) => !hidden.has(n.id));
       const activePath = selectedId && byId.has(selectedId) ? pathTo(selectedId, byId) : new Set();
 
       // An edge takes the accent colour of the card it leads into. Edges on the
       // active path are drawn last so they sit on top.
       const edges = [];
       const activeEdges = [];
-      for (const child of doc.nodes) {
+      for (const child of visibleNodes) {
         const parent = child.parent_id && byId.get(child.parent_id);
         if (parent && heights[parent.id] !== undefined) {
           const active = activePath.has(child.id);
@@ -1717,7 +1927,16 @@
       edges.push(...activeEdges);
 
       // Attached stickies: a short dashed connector from the card's edge to the sticky's edge.
-      const placedStickies = doc.stickies.map((st) => ({ st, ...stickyPosition(st, byId) }));
+      // A sticky attached to a hidden node is hidden with it.
+      const placedStickies = doc.stickies
+        .filter((st) => !(st.node_id && hidden.has(st.node_id)))
+        .map((st) => ({ st, ...stickyPosition(st, byId) }));
+
+      // Minimap blocks: every card on show in its branch colour, plus stickies.
+      const miniBlocks = [
+        ...visibleNodes.map((n) => ({ key: n.id, x: n.x, y: n.y, w: CARD_W, h: heights[n.id] || 200, fill: `var(--branch-${colours.get(n.id)})`, opacity: 0.9 })),
+        ...placedStickies.map(({ st, x, y }) => ({ key: st.id, x, y, w: STICKY_W, h: stickyHeights[st.id] || 120, fill: STICKY_LINE[st.color] || STICKY_LINE.yellow, opacity: 0.75 })),
+      ];
       for (const { st, x, y } of placedStickies) {
         const node = st.node_id ? byId.get(st.node_id) : null;
         if (!node || heights[node.id] === undefined) continue;
@@ -1814,10 +2033,13 @@
         >
           <div class="world" style=${{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}>
             <svg class="edges" width="1" height="1">${edges}</svg>
-            ${doc.nodes.map((n) => html`
+            ${visibleNodes.map((n) => html`
               <${Card}
                 key=${n.id}
                 node=${n}
+                descendants=${tree.descendants.get(n.id) || 0}
+                isCollapsed=${collapsed.has(n.id)}
+                onToggleCollapse=${toggleCollapse}
                 colour=${colours.get(n.id)}
                 isActive=${activePath.has(n.id)}
                 liveText=${liveText[n.id]}
@@ -1865,6 +2087,8 @@
             ${showGhost && html`<div class="ghost" style=${{ left: composer.x + 'px', top: composer.y + 'px' }}>New node</div>`}
           </div>
           ${overlay && html`<div class="overlay">${overlay}</div>`}
+          ${ready && miniBlocks.length > 0 && vpSize.w > 0 && html`
+            <${Minimap} blocks=${miniBlocks} view=${view} size=${vpSize} onMove=${centreOn} />`}
           ${ready && composer && html`
             <${Composer}
               composer=${composer}
