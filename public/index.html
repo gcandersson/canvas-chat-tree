@@ -4,20 +4,63 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>canvas-chat-tree</title>
+  <script>
+    // Pick the theme before anything is drawn, so the page never flashes the
+    // wrong one: the saved choice if there is one, otherwise the system setting.
+    (function () {
+      var theme = null;
+      try { theme = localStorage.getItem('canvas-chat-tree:theme'); } catch (e) {}
+      if (theme !== 'light' && theme !== 'dark') {
+        theme = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      }
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+  </script>
   <style>
+    /* Every colour on the page is a variable with a dark and a light value.
+       Dark is the default; the light values override it when <html> has
+       data-theme="light". Nothing below this block names a colour directly. */
     :root {
+      color-scheme: dark;
+      --card-w: 360px;
+
+      /* Surfaces and text */
       --bg: #0f1115;
       --panel: #171a21;
       --panel-2: #1d212a;
+      --panel-3: #232833;
       --border: #2a2f3a;
+      --border-strong: #3b4252;
       --text: #e6e8ec;
+      --text-soft: #d3d7de;
       --muted: #9aa3b2;
       --accent: #7aa2f7;
+      --on-accent: #0f1115;
       --error: #f0787a;
       --ok: #6fd08c;
-      --card-w: 360px;
+      --highlight: #f2f4f8; /* active path */
+      --grid: #252a35;
+      --edge: #4a5366;
 
-      /* Accent colours for branch families: 8 muted tones that read on the dark theme */
+      /* Primary button */
+      --primary-bg: #2b3a5c;
+      --primary-border: #3d5080;
+      --primary-bg-hover: #344670;
+      --primary-border-hover: #4a6199;
+
+      /* Rings and shadows */
+      --error-ring: rgba(240, 120, 122, 0.35);
+      --reading-ring: rgba(122, 162, 247, 0.55);
+      --shadow-1: rgba(0, 0, 0, 0.35);
+      --shadow-2: rgba(0, 0, 0, 0.45);
+      --shadow-3: rgba(0, 0, 0, 0.55);
+
+      /* Minimap */
+      --minimap-bg: rgba(23, 26, 33, 0.94);
+      --frame-fill: rgba(255, 255, 255, 0.07);
+      --frame-line: #e6e8ec;
+
+      /* Accent colours for branch families: 8 muted tones */
       --branch-0: #6d8fd1;
       --branch-1: #5fae9b;
       --branch-2: #c9a45c;
@@ -26,7 +69,96 @@
       --branch-5: #d08a6e;
       --branch-6: #5aa9c7;
       --branch-7: #c77f9c;
-      --highlight: #f2f4f8; /* active path */
+
+      /* Sticky notes: 5 colours, each a fill and a line */
+      --sticky-yellow-bg: #453f22;
+      --sticky-yellow-line: #9a8840;
+      --sticky-green-bg: #24402f;
+      --sticky-green-line: #4f8f68;
+      --sticky-blue-bg: #23364f;
+      --sticky-blue-line: #5380b5;
+      --sticky-pink-bg: #4a2a3c;
+      --sticky-pink-line: #a8648a;
+      --sticky-purple-bg: #38294f;
+      --sticky-purple-line: #8263b8;
+      --sticky-text: #eceef2;
+      --sticky-faint: rgba(236, 238, 242, 0.5);
+      --sticky-muted: rgba(236, 238, 242, 0.75);
+      --sticky-well: rgba(0, 0, 0, 0.2);
+      --sticky-btn: rgba(0, 0, 0, 0.28);
+      --sticky-btn-hover: rgba(0, 0, 0, 0.45);
+      --sticky-btn-border: rgba(255, 255, 255, 0.22);
+      --sticky-btn-border-hover: rgba(255, 255, 255, 0.4);
+      --sticky-dot-border: rgba(255, 255, 255, 0.25);
+      --sticky-error: #ffb4b5;
+    }
+
+    :root[data-theme="light"] {
+      color-scheme: light;
+
+      --bg: #f6f3ec;          /* warm off-white */
+      --panel: #ffffff;
+      --panel-2: #f5f2eb;
+      --panel-3: #ebe7de;
+      --border: #e2ddd2;
+      --border-strong: #c9c3b6;
+      --text: #22252b;
+      --text-soft: #343841;
+      --muted: #6b7280;
+      --accent: #3b6fd4;
+      --on-accent: #ffffff;
+      --error: #c8393c;
+      --ok: #2f8f55;
+      --highlight: #1d2330;
+      --grid: #dbd5c8;
+      --edge: #b3ac9e;
+
+      --primary-bg: #dde7fb;
+      --primary-border: #a9c0ee;
+      --primary-bg-hover: #cbdbf8;
+      --primary-border-hover: #8eaae6;
+
+      --error-ring: rgba(200, 57, 60, 0.25);
+      --reading-ring: rgba(59, 111, 212, 0.45);
+      --shadow-1: rgba(60, 50, 30, 0.12);
+      --shadow-2: rgba(60, 50, 30, 0.16);
+      --shadow-3: rgba(60, 50, 30, 0.24);
+
+      --minimap-bg: rgba(255, 255, 255, 0.94);
+      --frame-fill: rgba(0, 0, 0, 0.06);
+      --frame-line: #22252b;
+
+      /* The same 8 families, deeper so they hold on white */
+      --branch-0: #4a72c4;
+      --branch-1: #2f9079;
+      --branch-2: #b0851f;
+      --branch-3: #9457b3;
+      --branch-4: #5a9440;
+      --branch-5: #c2673f;
+      --branch-6: #2d8cb0;
+      --branch-7: #b8547f;
+
+      /* Paper-like pastels with dark text */
+      --sticky-yellow-bg: #fff3b8;
+      --sticky-yellow-line: #d4b93f;
+      --sticky-green-bg: #d8f0da;
+      --sticky-green-line: #76b884;
+      --sticky-blue-bg: #d9e7fb;
+      --sticky-blue-line: #74a0dc;
+      --sticky-pink-bg: #fbdce9;
+      --sticky-pink-line: #d985ab;
+      --sticky-purple-bg: #e7defa;
+      --sticky-purple-line: #a086d4;
+      --sticky-text: #2a2a2e;
+      --sticky-faint: rgba(0, 0, 0, 0.4);
+      --sticky-muted: rgba(0, 0, 0, 0.6);
+      --sticky-well: rgba(255, 255, 255, 0.55);
+      --sticky-btn: rgba(255, 255, 255, 0.6);
+      --sticky-btn-hover: rgba(255, 255, 255, 0.9);
+      --sticky-btn-border: rgba(0, 0, 0, 0.18);
+      --sticky-btn-border-hover: rgba(0, 0, 0, 0.35);
+      --sticky-dot-border: rgba(0, 0, 0, 0.2);
+      --sticky-error: #b3261e;
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
@@ -51,11 +183,11 @@
       height: 32px;
     }
     button { cursor: pointer; white-space: nowrap; }
-    button:hover:not(:disabled) { border-color: #3b4252; background: #232833; }
+    button:hover:not(:disabled) { border-color: var(--border-strong); background: var(--panel-3); }
     button:disabled, select:disabled { opacity: 0.55; cursor: default; }
     button:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-    button.primary { background: #2b3a5c; border-color: #3d5080; }
-    button.primary:hover:not(:disabled) { background: #344670; border-color: #4a6199; }
+    button.primary { background: var(--primary-bg); border-color: var(--primary-border); }
+    button.primary:hover:not(:disabled) { background: var(--primary-bg-hover); border-color: var(--primary-border-hover); }
     select { max-width: 240px; }
 
     /* Top bar */
@@ -85,6 +217,7 @@
     .inline-status.bad { color: var(--error); min-width: 0; }
     .clip { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
     .zoom, .topbar button, .topbar select { flex: none; }
+    .topbar .icon-only { width: 32px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
     @media (max-width: 1100px) { .brand, .title { display: none; } }
 
     /* Viewport and world */
@@ -95,12 +228,12 @@
       cursor: grab;
       touch-action: none;
       background-color: var(--bg);
-      background-image: radial-gradient(circle, #252a35 1px, transparent 1.2px);
+      background-image: radial-gradient(circle, var(--grid) 1px, transparent 1.2px);
     }
     .viewport.panning { cursor: grabbing; user-select: none; }
     .world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
     .edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
-    .edges path { fill: none; stroke: #4a5366; stroke-width: 2.5; stroke-linecap: round; }
+    .edges path { fill: none; stroke: var(--edge); stroke-width: 2.5; stroke-linecap: round; }
     .edges path.active { stroke: var(--highlight) !important; stroke-width: 3.5; }
     .edges path.draft { stroke: var(--accent); stroke-dasharray: 6 6; opacity: 0.8; }
 
@@ -112,15 +245,15 @@
       /* --node is the card's accent colour (its branch family), set per card */
       border: 2px solid var(--node, var(--border));
       border-radius: 10px;
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+      box-shadow: 0 4px 16px var(--shadow-1);
       cursor: default;
     }
     /* Rings are drawn with box-shadow so they never change the card's size. */
-    .card.error { border-color: var(--error); box-shadow: 0 0 0 2px rgba(240, 120, 122, 0.35), 0 4px 16px rgba(0, 0, 0, 0.35); }
-    .card.reading { box-shadow: 0 0 0 2px rgba(122, 162, 247, 0.55), 0 4px 16px rgba(0, 0, 0, 0.35); }
-    .card.active { border-color: var(--highlight); box-shadow: 0 0 0 2px var(--highlight), 0 4px 16px rgba(0, 0, 0, 0.35); }
-    .card.target { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 4px 16px rgba(0, 0, 0, 0.35); }
-    .card.dragging { z-index: 1; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55); }
+    .card.error { border-color: var(--error); box-shadow: 0 0 0 2px var(--error-ring), 0 4px 16px var(--shadow-1); }
+    .card.reading { box-shadow: 0 0 0 2px var(--reading-ring), 0 4px 16px var(--shadow-1); }
+    .card.active { border-color: var(--highlight); box-shadow: 0 0 0 2px var(--highlight), 0 4px 16px var(--shadow-1); }
+    .card.target { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 4px 16px var(--shadow-1); }
+    .card.dragging { z-index: 1; box-shadow: 0 10px 28px var(--shadow-3); }
     .card.dragging .card-head { cursor: grabbing; }
     .card-badge {
       position: absolute;
@@ -165,7 +298,7 @@
       overflow-wrap: anywhere;
       max-height: 220px;
       overflow-y: auto;
-      color: #d3d7de;
+      color: var(--text-soft);
     }
     .card-body.muted { color: var(--muted); }
 
@@ -185,7 +318,7 @@
     .md a { color: var(--accent); }
     .md code {
       font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      background: #232833;
+      background: var(--panel-3);
       border-radius: 4px;
       padding: 1px 4px;
     }
@@ -213,7 +346,7 @@
     .card-actions button { height: 28px; padding: 2px 10px; font-size: 13px; }
     .card-actions .push { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; }
     .card-actions .icon { width: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
-    .scroll { scrollbar-width: thin; scrollbar-color: #3b4252 transparent; }
+    .scroll { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 
     /* Collapse toggle: a pill on the card's bottom edge, where its children hang from */
     .fold {
@@ -231,9 +364,9 @@
       border: 1px solid var(--node, var(--border));
       color: var(--muted);
     }
-    .fold:hover:not(:disabled) { color: var(--text); border-color: var(--node, #3b4252); }
-    .fold.closed { background: var(--node, var(--accent)); border-color: var(--node, var(--accent)); color: #0f1115; font-weight: 700; }
-    .fold.closed:hover:not(:disabled) { background: var(--node, var(--accent)); color: #0f1115; filter: brightness(1.12); }
+    .fold:hover:not(:disabled) { color: var(--text); border-color: var(--node, var(--border-strong)); }
+    .fold.closed { background: var(--node, var(--accent)); border-color: var(--node, var(--accent)); color: var(--on-accent); font-weight: 700; }
+    .fold.closed:hover:not(:disabled) { background: var(--node, var(--accent)); color: var(--on-accent); filter: brightness(1.12); }
 
     /* Minimap */
     .minimap {
@@ -244,39 +377,39 @@
       height: 140px;
       z-index: 1;
       overflow: hidden;
-      background: rgba(23, 26, 33, 0.94);
-      border: 1px solid #3b4252;
+      background: var(--minimap-bg);
+      border: 1px solid var(--border-strong);
       border-radius: 8px;
-      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+      box-shadow: 0 6px 18px var(--shadow-2);
       cursor: crosshair;
       touch-action: none;
     }
     .minimap svg { display: block; width: 100%; height: 100%; }
-    .minimap .frame { fill: rgba(255, 255, 255, 0.07); stroke: #e6e8ec; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+    .minimap .frame { fill: var(--frame-fill); stroke: var(--frame-line); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
     @media (max-width: 700px) { .minimap { display: none; } }
 
     /* Sticky notes */
     .sticky {
-      --s-bg: #453f22;
-      --s-line: #9a8840;
+      --s-bg: var(--sticky-yellow-bg);
+      --s-line: var(--sticky-yellow-line);
       position: absolute;
       width: 200px;
       z-index: 2;
       display: flex;
       flex-direction: column;
-      color: #eceef2;
+      color: var(--sticky-text);
       background: var(--s-bg);
       border: 1px solid var(--s-line);
       border-radius: 6px;
-      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+      box-shadow: 0 6px 18px var(--shadow-2);
       cursor: grab;
       touch-action: none;
     }
-    .sticky.c-green { --s-bg: #24402f; --s-line: #4f8f68; }
-    .sticky.c-blue { --s-bg: #23364f; --s-line: #5380b5; }
-    .sticky.c-pink { --s-bg: #4a2a3c; --s-line: #a8648a; }
-    .sticky.c-purple { --s-bg: #38294f; --s-line: #8263b8; }
-    .sticky.dragging { cursor: grabbing; z-index: 3; box-shadow: 0 12px 28px rgba(0, 0, 0, 0.6); }
+    .sticky.c-green { --s-bg: var(--sticky-green-bg); --s-line: var(--sticky-green-line); }
+    .sticky.c-blue { --s-bg: var(--sticky-blue-bg); --s-line: var(--sticky-blue-line); }
+    .sticky.c-pink { --s-bg: var(--sticky-pink-bg); --s-line: var(--sticky-pink-line); }
+    .sticky.c-purple { --s-bg: var(--sticky-purple-bg); --s-line: var(--sticky-purple-line); }
+    .sticky.dragging { cursor: grabbing; z-index: 3; box-shadow: 0 12px 28px var(--shadow-3); }
     .sticky-text {
       min-height: 72px;
       max-height: 240px;
@@ -289,7 +422,7 @@
       user-select: none;
       -webkit-user-select: none;
     }
-    .sticky-text.empty { color: rgba(236, 238, 242, 0.5); font-style: italic; }
+    .sticky-text.empty { color: var(--sticky-faint); font-style: italic; }
     textarea.sticky-text {
       display: block;
       width: 100%;
@@ -298,7 +431,7 @@
       border: 0;
       outline: 0;
       border-radius: 5px 5px 0 0;
-      background: rgba(0, 0, 0, 0.2);
+      background: var(--sticky-well);
       color: inherit;
       font-family: inherit;
       cursor: text;
@@ -312,7 +445,7 @@
       min-height: 30px;
       padding: 4px 8px 6px;
       font-size: 11px;
-      color: rgba(236, 238, 242, 0.75);
+      color: var(--sticky-muted);
       cursor: default;
     }
     .sticky-bar .dot {
@@ -321,23 +454,23 @@
       height: 13px;
       padding: 0;
       border-radius: 50%;
-      border: 1px solid rgba(255, 255, 255, 0.25);
+      border: 1px solid var(--sticky-dot-border);
       background: var(--dot);
     }
-    .sticky-bar .dot:hover:not(:disabled) { background: var(--dot); border-color: #eceef2; }
-    .sticky-bar .dot.on { outline: 2px solid #eceef2; outline-offset: 1px; }
+    .sticky-bar .dot:hover:not(:disabled) { background: var(--dot); border-color: var(--sticky-text); }
+    .sticky-bar .dot.on { outline: 2px solid var(--sticky-text); outline-offset: 1px; }
     .sticky-bar .mini {
       flex: none;
       height: 20px;
       padding: 0 6px;
       font-size: 11px;
-      background: rgba(0, 0, 0, 0.28);
-      border-color: rgba(255, 255, 255, 0.22);
+      background: var(--sticky-btn);
+      border-color: var(--sticky-btn-border);
     }
-    .sticky-bar .mini:hover:not(:disabled) { background: rgba(0, 0, 0, 0.45); border-color: rgba(255, 255, 255, 0.4); }
+    .sticky-bar .mini:hover:not(:disabled) { background: var(--sticky-btn-hover); border-color: var(--sticky-btn-border-hover); }
     .sticky-bar .mini.x { width: 20px; padding: 0; }
     .sticky-bar .state { margin-left: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .sticky-bar .state.bad { color: #ffb4b5; }
+    .sticky-bar .state.bad { color: var(--sticky-error); }
     .sticky-bar .inline-status { font-size: 11px; color: inherit; }
     .sticky-bar .spin { width: 10px; height: 10px; }
     .edges line.tether { stroke-width: 1.5; stroke-dasharray: 4 5; stroke-linecap: round; }
@@ -365,9 +498,9 @@
       transform: translateX(-50%);
       width: min(560px, calc(100% - 32px));
       background: var(--panel);
-      border: 1px solid #3b4252;
+      border: 1px solid var(--border-strong);
       border-radius: 12px;
-      box-shadow: 0 10px 32px rgba(0, 0, 0, 0.5);
+      box-shadow: 0 10px 32px var(--shadow-3);
       padding: 12px;
       cursor: default;
       z-index: 2;
@@ -409,8 +542,8 @@
       display: flex;
       flex-direction: column;
       background: var(--panel);
-      border-left: 1px solid #3b4252;
-      box-shadow: -10px 0 32px rgba(0, 0, 0, 0.45);
+      border-left: 1px solid var(--border-strong);
+      box-shadow: -10px 0 32px var(--shadow-2);
       cursor: default;
       z-index: 3;
     }
@@ -447,7 +580,7 @@
       border: 1px solid var(--border);
       border-radius: 8px;
     }
-    .reader-reply { font-size: 15px; line-height: 1.6; overflow-wrap: anywhere; color: #d3d7de; }
+    .reader-reply { font-size: 15px; line-height: 1.6; overflow-wrap: anywhere; color: var(--text-soft); }
     .reader-reply.md h1 { font-size: 20px; }
     .reader-reply.md h2 { font-size: 17px; }
     .reader-reply.md h3, .reader-reply.md h4, .reader-reply.md h5, .reader-reply.md h6 { font-size: 15px; }
@@ -490,7 +623,7 @@
       flex: none;
       width: 14px;
       height: 14px;
-      border: 2px solid #3b4252;
+      border: 2px solid var(--border-strong);
       border-top-color: var(--accent);
       border-radius: 50%;
       animation: spin 0.8s linear infinite;
@@ -542,8 +675,8 @@
     const READER_WIDE = 1000;  // from this window width, reader and composer fit side by side
     const STICKY_W = 200;
     const STICKY_COLORS = ['yellow', 'green', 'blue', 'pink', 'purple'];
-    // Dot and connector colour for each sticky colour (matches the --s-line values in the CSS).
-    const STICKY_LINE = { yellow: '#9a8840', green: '#4f8f68', blue: '#5380b5', pink: '#a8648a', purple: '#8263b8' };
+    // Dot, connector and minimap colour for each sticky colour: the theme's line colour.
+    const STICKY_LINE = Object.fromEntries(STICKY_COLORS.map((c) => [c, `var(--sticky-${c}-line)`]));
     const DRAG_THRESHOLD = 5;  // a press that moves less than this many pixels is a click, not a drag
 
     const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -551,6 +684,21 @@
       const one = text.replace(/\s+/g, ' ').trim();
       return one.length > max ? one.slice(0, max - 1) + '…' : one;
     };
+
+    // --- Theme --------------------------------------------------------------
+
+    const THEME_KEY = 'canvas-chat-tree:theme';
+    const systemTheme = () =>
+      (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+    // The theme the user picked with the toggle, or null if they never picked one.
+    function chosenTheme() {
+      try {
+        const theme = localStorage.getItem(THEME_KEY);
+        return theme === 'light' || theme === 'dark' ? theme : null;
+      } catch {
+        return null;
+      }
+    }
 
     // --- Markdown -----------------------------------------------------------
 
@@ -1194,6 +1342,7 @@
       const [liveText, setLiveText] = useState({});     // node id -> reply text received over the stream so far
       const [readerId, setReaderId] = useState(null);   // node shown in the reader panel
       const [selectedId, setSelectedId] = useState(null); // node whose path to the root is highlighted
+      const [theme, setTheme] = useState(() => chosenTheme() || systemTheme());
       const [collapsed, setCollapsed] = useState(() => new Set()); // node ids whose descendants are hidden
       const [vpSize, setVpSize] = useState({ w: 0, h: 0 });        // viewport size, for the minimap
       const [stickyHeights, setStickyHeights] = useState({});
@@ -1221,6 +1370,28 @@
       readerOpenRef.current = readerId !== null;
       const nodesRef = useRef(doc.nodes);
       nodesRef.current = doc.nodes;
+
+      // -- Theme -------------------------------------------------------------
+
+      // The stylesheet switches on this attribute, so a change shows at once.
+      useEffect(() => {
+        document.documentElement.setAttribute('data-theme', theme);
+      }, [theme]);
+
+      // Until a theme has been chosen with the toggle, follow the system setting live.
+      useEffect(() => {
+        if (!window.matchMedia) return;
+        const query = window.matchMedia('(prefers-color-scheme: light)');
+        const onChange = () => { if (!chosenTheme()) setTheme(systemTheme()); };
+        query.addEventListener('change', onChange);
+        return () => query.removeEventListener('change', onChange);
+      }, []);
+
+      const toggleTheme = () => {
+        const next = theme === 'dark' ? 'light' : 'dark';
+        try { localStorage.setItem(THEME_KEY, next); } catch { /* still switches, just not remembered */ }
+        setTheme(next);
+      };
 
       // -- Loading -----------------------------------------------------------
 
@@ -2051,6 +2222,21 @@
               <small>${doc.nodes.length} ${doc.nodes.length === 1 ? 'node' : 'nodes'}</small>
             </span>`}
           <span class="spacer"></span>
+          <button
+            class="icon-only"
+            onClick=${toggleTheme}
+            title=${theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+            aria-label=${theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+          >
+            ${theme === 'dark'
+              ? html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+                  <circle cx="8" cy="8" r="3" />
+                  <path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1" />
+                </svg>`
+              : html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
+                  <path d="M13.5 9.8A5.8 5.8 0 0 1 6.2 2.5a5.8 5.8 0 1 0 7.3 7.3z" />
+                </svg>`}
+          </button>
           <span class="zoom" title="Zoom level">${Math.round(view.k * 100)}%</span>
           <button onClick=${fit} disabled=${!ready || doc.nodes.length === 0}>Fit to screen</button>
         </div>
