@@ -225,7 +225,7 @@
     .clip { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
     .zoom, .topbar button, .topbar select { flex: none; }
     .topbar .icon-only { width: 32px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
-    @media (max-width: 1100px) { .brand, .title { display: none; } }
+    @media (max-width: 1280px) { .brand, .title { display: none; } }
 
     /* Viewport and world */
     .viewport {
@@ -607,6 +607,84 @@
       .viewport.reader-open .composer:not(.centred) { left: calc((100% - 480px) / 2); }
     }
 
+    /* Context panel (shares the reader panel's frame) */
+    .ctx-intro { margin: 0 0 18px; color: var(--muted); }
+    .ctx-instructions {
+      display: block;
+      width: 100%;
+      min-height: 140px;
+      max-height: 320px;
+      resize: vertical;
+      font: inherit;
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    .ctx-state { display: flex; align-items: center; gap: 8px; min-height: 28px; margin: 6px 0 22px; font-size: 12px; color: var(--muted); }
+    .ctx-state.bad { color: var(--error); }
+    .ctx-state button { height: 24px; padding: 0 8px; font-size: 12px; }
+    .ctx-warning {
+      margin: 0 0 12px;
+      padding: 10px 12px;
+      border: 1px solid var(--error);
+      border-radius: 8px;
+      color: var(--error);
+      background: color-mix(in srgb, var(--error) 9%, var(--panel));
+      overflow-wrap: anywhere;
+    }
+    .ctx-warning ul { margin: 6px 0 0; padding-left: 20px; }
+    .ctx-empty { color: var(--muted); }
+    .ctx-note {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      margin-bottom: 6px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .ctx-note.out { border-style: dashed; }
+    .ctx-note .swatch { flex: none; width: 12px; height: 12px; border-radius: 50%; background: var(--dot); }
+    .ctx-note .line {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      text-align: left;
+      height: auto;
+      padding: 0;
+      border: 0;
+      background: none;
+    }
+    .ctx-note .line:hover:not(:disabled) { background: none; text-decoration: underline; }
+    .ctx-note .tag { flex: none; font-size: 11px; color: var(--muted); white-space: nowrap; }
+    .ctx-note .tag.bad { color: var(--error); }
+    .ctx-note .unpin { flex: none; height: 24px; padding: 0 8px; font-size: 12px; }
+    .topbar button.on { border-color: var(--accent); color: var(--accent); }
+
+    /* Pin on stickies */
+    .sticky-bar .mini.pin { width: 20px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+    .sticky-bar .mini.pin.on, .sticky-bar .mini.pin.on:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+    .pin-mark {
+      position: absolute;
+      top: -9px;
+      right: -9px;
+      width: 20px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      background: var(--accent);
+      color: var(--on-accent);
+      box-shadow: 0 2px 6px var(--shadow-2);
+      pointer-events: none;
+    }
+
     /* Toast: short messages about a whole-canvas action (Tidy and its undo) */
     .toast {
       position: absolute;
@@ -981,7 +1059,7 @@
 
     // A sticky note. Plain text only. Double-click to edit, drag to move.
     // Everything in the bottom bar is a normal button and never starts a drag.
-    function Sticky({ sticky, x, y, isEditing, isDragging, onPath, save, removal, onHeight, onDragStart, onDragMove, onDragEnd, onEdit, onEndEdit, onInput, onColor, onAskDelete, onCancelDelete, onDelete, onRetrySave }) {
+    function Sticky({ sticky, x, y, isEditing, isDragging, onPath, save, removal, onHeight, onDragStart, onDragMove, onDragEnd, onEdit, onEndEdit, onInput, onColor, onAskDelete, onCancelDelete, onDelete, onRetrySave, onPin }) {
       const ref = useRef(null);
       const inputRef = useRef(null);
 
@@ -1022,8 +1100,9 @@
             <span class="state bad" title=${save.error}>Not saved</span>
             <button class="mini" onClick=${() => onRetrySave(sticky.id)}>Retry</button>`;
         } else state = html`<span class="state"></span>`;
+        const failed = save && save.state === 'failed';
         bar = html`
-          ${STICKY_COLORS.map((c) => html`
+          ${!failed && STICKY_COLORS.map((c) => html`
             <button
               key=${c}
               class=${'dot' + (sticky.color === c ? ' on' : '')}
@@ -1033,6 +1112,13 @@
               onClick=${() => onColor(sticky.id, c)}
             ></button>`)}
           ${state}
+          <button
+            class=${'mini pin' + (sticky.in_context ? ' on' : '')}
+            title=${sticky.in_context ? 'Used as AI context on this canvas. Click to stop.' : 'Use as AI context'}
+            aria-label="Use as AI context"
+            aria-pressed=${!!sticky.in_context}
+            onClick=${() => onPin(sticky.id, !sticky.in_context)}
+          ><${PinIcon} filled=${!!sticky.in_context} /></button>
           <button class="mini x" title="Delete this note" aria-label="Delete this note" onClick=${() => onAskDelete(sticky.id)}>×</button>`;
       }
 
@@ -1047,6 +1133,7 @@
           onPointerCancel=${onDragEnd}
           onDblClick=${(e) => { if (!inBar(e)) onEdit(sticky.id); }}
         >
+          ${sticky.in_context && html`<span class="pin-mark" title="Pinned: sent to the AI as context on this canvas"><${PinIcon} filled=${true} /></span>`}
           ${isEditing
             ? html`<textarea
                 ref=${inputRef}
@@ -1142,6 +1229,100 @@
         </aside>`;
     }
 
+    // Side panel: what the AI gets with every prompt on this canvas.
+    // Mounted once per canvas (it is keyed by canvas id).
+    function ContextPanel({ canvas, stickies, onSaveInstructions, onUnpin, onShowSticky, onClose }) {
+      const [draft, setDraft] = useState(canvas.instructions || '');
+      const [save, setSave] = useState({ state: 'idle', error: null }); // idle | saving | saved | failed
+      const draftRef = useRef(draft);
+      const dirty = useRef(false);
+      const timer = useRef(null);
+      const seq = useRef(0);
+
+      const saveNow = async () => {
+        clearTimeout(timer.current);
+        if (!dirty.current) return;
+        dirty.current = false;
+        const mine = ++seq.current;
+        setSave({ state: 'saving', error: null });
+        try {
+          await onSaveInstructions(canvas.id, draftRef.current);
+          if (mine === seq.current) setSave({ state: 'saved', error: null });
+        } catch (err) {
+          dirty.current = true; // so Retry (or the next edit) sends it again
+          if (mine === seq.current) setSave({ state: 'failed', error: err.message });
+        }
+      };
+      const onInput = (e) => {
+        draftRef.current = e.target.value;
+        setDraft(e.target.value);
+        dirty.current = true;
+        clearTimeout(timer.current);
+        timer.current = setTimeout(saveNow, 800);
+      };
+      // Closing the panel or switching canvas with unsaved text still saves it.
+      useEffect(() => () => {
+        clearTimeout(timer.current);
+        if (dirty.current) onSaveInstructions(canvas.id, draftRef.current).catch(() => {});
+      }, []);
+
+      const { pinned, included, leftOut, used } = selectPinnedNotes(stickies);
+
+      let state;
+      if (save.state === 'saving') state = html`<div class="ctx-state"><${Spinner} label="Saving…" /></div>`;
+      else if (save.state === 'saved') state = html`<div class="ctx-state">Saved</div>`;
+      else if (save.state === 'failed') {
+        state = html`<div class="ctx-state bad"><span class="clip" title=${save.error}>Not saved: ${save.error}</span><button onClick=${saveNow}>Retry</button></div>`;
+      } else state = html`<div class="ctx-state">Saved automatically as you type.</div>`;
+
+      return html`
+        <aside class="reader context" aria-label="Context panel">
+          <div class="reader-bar">
+            <span class="name">Context</span>
+            <span class="spacer"></span>
+            <button class="close" onClick=${onClose} aria-label="Close context panel" title="Close (Esc)">×</button>
+          </div>
+          <div class="reader-scroll scroll">
+            <p class="ctx-intro">The AI gets this with every prompt on this canvas, before the path to the node. Other canvases are not affected.</p>
+
+            <div class="reader-label">Instructions</div>
+            <textarea
+              class="ctx-instructions scroll"
+              placeholder="For example: Always answer in exactly three bullet points."
+              value=${draft}
+              onInput=${onInput}
+              onBlur=${saveNow}
+            ></textarea>
+            ${state}
+
+            <div class="reader-label">
+              Pinned notes
+              <small>${pinned.length === 0 ? 'none' : `${pinned.length} · ${used.toLocaleString('en-GB')} of ${PINNED_NOTES_CAP.toLocaleString('en-GB')} characters`}</small>
+            </div>
+            ${leftOut.length > 0 && html`
+              <div class="ctx-warning" role="alert">
+                Pinned notes are limited to ${PINNED_NOTES_CAP.toLocaleString('en-GB')} characters in total. Newest notes go first, and
+                ${leftOut.length === 1 ? ' this note does not fit, so it is not sent to the AI:' : ' these notes do not fit, so they are not sent to the AI:'}
+                <ul>${leftOut.map((st) => html`<li key=${st.id}>${firstLine(st.content)}</li>`)}</ul>
+              </div>`}
+            ${pinned.length === 0 && html`
+              <div class="ctx-empty">No pinned notes. Click the pin on a sticky to send it to the AI with every prompt on this canvas.</div>`}
+            ${pinned.map((st) => {
+              const empty = !(st.content || '').trim();
+              const out = !empty && !included.has(st.id);
+              return html`
+                <div key=${st.id} class=${'ctx-note' + (out || empty ? ' out' : '')}>
+                  <span class="swatch" style=${{ '--dot': STICKY_LINE[st.color] || STICKY_LINE.yellow }}></span>
+                  <button class="line" onClick=${() => onShowSticky(st)} title="Show this sticky on the canvas">${empty ? '(empty note)' : firstLine(st.content)}</button>
+                  ${empty && html`<span class="tag">empty, not sent</span>`}
+                  ${out && html`<span class="tag bad">left out</span>`}
+                  <button class="unpin" onClick=${() => onUnpin(st.id, false)}>Unpin</button>
+                </div>`;
+            })}
+          </div>
+        </aside>`;
+    }
+
     function Composer({ composer, label, centred, canCancel, onChange, onSend, onCancel }) {
       const inputRef = useRef(null);
 
@@ -1221,6 +1402,43 @@
       }
       return colour;
     }
+
+    // --- Canvas context -----------------------------------------------------
+
+    const PINNED_NOTES_CAP = 8000; // total characters of pinned-note text sent to the AI
+
+    // Which pinned notes the AI gets. Same rule as selectPinnedNotes in
+    // server.js: newest first; a note is included while it still fits in the
+    // cap, otherwise it is left out; empty notes are skipped.
+    function selectPinnedNotes(stickies) {
+      const pinned = stickies
+        .filter((st) => st.in_context)
+        .sort((a, b) => (a.created_at > b.created_at ? -1 : a.created_at < b.created_at ? 1 : a.id > b.id ? -1 : 1));
+      const included = new Set();
+      const leftOut = [];
+      let used = 0;
+      for (const st of pinned) {
+        const text = (st.content || '').trim();
+        if (!text) continue;
+        if (used + text.length <= PINNED_NOTES_CAP) {
+          used += text.length;
+          included.add(st.id);
+        } else {
+          leftOut.push(st);
+        }
+      }
+      return { pinned, included, leftOut, used };
+    }
+
+    const firstLine = (text) => {
+      const line = (text || '').trim().split('\n')[0];
+      return line.length > 70 ? line.slice(0, 69) + '…' : line;
+    };
+
+    const PinIcon = ({ filled }) => html`
+      <svg viewBox="0 0 16 16" width="12" height="12" fill=${filled ? 'currentColor' : 'none'} stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round">
+        <path d="M9.6 1.8l4.6 4.6-1.9.5-2.4 2.4.2 2.9-1.1 1.1-2.9-2.9-3.6 3.6 M6.1 10.4 3.2 7.5l1.1-1.1 2.9.2 2.4-2.4z" />
+      </svg>`;
 
     // --- Collapse -----------------------------------------------------------
 
@@ -1460,6 +1678,7 @@
       const [draggingId, setDraggingId] = useState(null);
       const [liveText, setLiveText] = useState({});     // node id -> reply text received over the stream so far
       const [readerId, setReaderId] = useState(null);   // node shown in the reader panel
+      const [contextOpen, setContextOpen] = useState(false); // the Context panel (shares the reader's place)
       const [selectedId, setSelectedId] = useState(null); // node whose path to the root is highlighted
       const [theme, setTheme] = useState(() => chosenTheme() || systemTheme());
       // Tidy layout: phase is idle | animating | saving | done | restored | failed.
@@ -1490,7 +1709,7 @@
       const animFrame = useRef(null);
       const animTimer = useRef(null);
       const readerOpenRef = useRef(false);
-      readerOpenRef.current = readerId !== null;
+      readerOpenRef.current = readerId !== null || contextOpen;
       const nodesRef = useRef(doc.nodes);
       nodesRef.current = doc.nodes;
 
@@ -1841,7 +2060,14 @@
 
       // -- Reader panel -------------------------------------------------------
 
-      const onExpand = (node) => setReaderId((current) => (current === node.id ? null : node.id));
+      const onExpand = (node) => {
+        setContextOpen(false);
+        setReaderId((current) => (current === node.id ? null : node.id));
+      };
+      const toggleContext = () => {
+        setReaderId(null);
+        setContextOpen((open) => !open);
+      };
       // Continue and Branch from the reader do exactly what the card's buttons do.
       // On a narrow window the panel would cover the composer, so it closes first.
       const fromReader = (mode) => (node) => {
@@ -1854,13 +2080,13 @@
 
       // Esc closes the reader, unless something else (the composer) already used the key.
       useEffect(() => {
-        if (readerId === null) return;
+        if (readerId === null && !contextOpen) return;
         const onKey = (e) => {
-          if (e.key === 'Escape' && !e.defaultPrevented) setReaderId(null);
+          if (e.key === 'Escape' && !e.defaultPrevented) { setReaderId(null); setContextOpen(false); }
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-      }, [readerId]);
+      }, [readerId, contextOpen]);
 
       // An empty canvas always shows the composer, centred.
       useEffect(() => {
@@ -2068,6 +2294,14 @@
         else if (e.type === 'pointerup') setSelectedId(d.id);
       };
 
+      // -- Canvas context: instructions and pinned notes -----------------------
+
+      // Shown at once, then saved; the panel reports saving, saved or failed.
+      const saveInstructions = async (canvasId, text) => {
+        setDoc((d) => (d.canvas && d.canvas.id === canvasId ? { ...d, canvas: { ...d.canvas, instructions: text } } : d));
+        await api('/api/canvases/' + canvasId, { method: 'PATCH', body: JSON.stringify({ instructions: text }) });
+      };
+
       // -- Tidy layout --------------------------------------------------------
       // A one-off action: it works out new positions, animates the cards there
       // and saves every position in one request. Positions are always stored;
@@ -2262,6 +2496,11 @@
         updateSticky(id, { color });
         saveSticky(id, { color });
       };
+      // Pin or unpin: a pinned sticky is sent to the AI with every prompt on this canvas.
+      const onStickyPin = (id, pinned) => {
+        updateSticky(id, { in_context: pinned });
+        saveSticky(id, { in_context: pinned });
+      };
 
       // Creating. A free sticky goes to the centre of the viewport. An attached
       // one goes beside its card: to the right, or to the left when the right
@@ -2410,6 +2649,7 @@
       const isEmpty = ready && doc.nodes.length === 0;
       const composerParent = composer && composer.parentId ? byId.get(composer.parentId) : null;
       const readerNode = readerId ? byId.get(readerId) : null;
+      const pinnedCount = doc.stickies.filter((st) => st.in_context).length;
       const showGhost = composer && composer.x !== null && !isEmpty;
       if (showGhost && composerParent && heights[composerParent.id] !== undefined) {
         edges.push(html`<path key="draft" class="draft" d=${curve(composerParent.x + CARD_W / 2, composerParent.y + heights[composerParent.id], composer.x + CARD_W / 2, composer.y)} />`);
@@ -2458,6 +2698,12 @@
           <button onClick=${onNewConversation} disabled=${!ready || isEmpty || (composer && composer.busy)}>New conversation</button>
           <button onClick=${() => addSticky(null)} disabled=${!ready || stickyAdd.busy} title="Add a free sticky note at the centre of the screen">+ Sticky</button>
           <button onClick=${runTidy} disabled=${!ready || doc.nodes.length === 0 || tidyBusy} title="Rearrange every card into a clean tree and save the positions">Tidy</button>
+          <button
+            class=${contextOpen ? 'on' : ''}
+            onClick=${toggleContext}
+            disabled=${!ready}
+            title="Instructions and pinned notes the AI gets with every prompt on this canvas"
+          >Context${pinnedCount > 0 ? ` · ${pinnedCount}` : ''}</button>
           ${stickyAdd.busy && html`<${Spinner} label="Adding sticky…" />`}
           ${stickyAdd.error && html`
             <span class="inline-status bad">
@@ -2496,7 +2742,7 @@
         </div>
 
         <div
-          class=${'viewport' + (panning ? ' panning' : '') + (readerNode ? ' reader-open' : '')}
+          class=${'viewport' + (panning ? ' panning' : '') + (readerNode || contextOpen ? ' reader-open' : '')}
           ref=${viewportRef}
           style=${viewportStyle}
           onPointerDown=${onPointerDown}
@@ -2557,6 +2803,7 @@
                 onCancelDelete=${cancelDeleteSticky}
                 onDelete=${deleteSticky}
                 onRetrySave=${retryStickySave}
+                onPin=${onStickyPin}
               />`)}
             ${showGhost && html`<div class="ghost" style=${{ left: composer.x + 'px', top: composer.y + 'px' }}>New node</div>`}
           </div>
@@ -2573,6 +2820,19 @@
               onChange=${(text) => setComposer((c) => (c ? { ...c, text } : c))}
               onSend=${sendComposer}
               onCancel=${() => setComposer(null)}
+            />`}
+          ${ready && contextOpen && html`
+            <${ContextPanel}
+              key=${doc.canvas.id}
+              canvas=${doc.canvas}
+              stickies=${doc.stickies}
+              onSaveInstructions=${saveInstructions}
+              onUnpin=${onStickyPin}
+              onShowSticky=${(st) => {
+                const pos = stickyPosition(st, byId);
+                centreOn({ x: pos.x + STICKY_W / 2, y: pos.y + (stickyHeights[st.id] || 120) / 2 });
+              }}
+              onClose=${() => setContextOpen(false)}
             />`}
           ${ready && readerNode && html`
             <${Reader}

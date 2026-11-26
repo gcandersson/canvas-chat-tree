@@ -15,6 +15,8 @@ const MAX_TOKENS = 8192;
 const MAX_PROMPT_CHARS = 20000;
 const MAX_STICKY_CHARS = 10000;
 const MAX_BATCH_POSITIONS = 5000;
+const MAX_INSTRUCTIONS_CHARS = 20000;
+const PINNED_NOTES_CAP = 8000; // total characters of pinned-note text sent to the AI
 const STICKY_COLORS = ['yellow', 'green', 'blue', 'pink', 'purple'];
 const SYSTEM_PROMPT =
   'The user is exploring ideas on a branching canvas, where each exchange is a node and any node ' +
@@ -78,6 +80,9 @@ const SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS stickies_canvas_id_idx ON stickies(canvas_id);
   CREATE INDEX IF NOT EXISTS stickies_node_id_idx ON stickies(node_id);
+
+  -- Canvas instructions: free text sent to the AI for every node on the canvas.
+  ALTER TABLE canvases ADD COLUMN IF NOT EXISTS instructions text NULL;
 `;
 
 let schemaReady = false;
@@ -195,6 +200,76 @@ function describeAiError(err) {
   return err && err.message ? err.message : String(err);
 }
 
+// --- Canvas context --------------------------------------------------------
+// Besides the path, every AI call on a canvas gets that canvas's instructions
+// and its pinned notes (stickies marked "Use as AI context"). Stickies that
+// are not pinned are never sent.
+
+// Which pinned notes are sent. Notes come newest first; a note is included
+// while it still fits in the cap, otherwise it is left out. Empty notes are
+// skipped. The page applies the same rule (selectPinnedNotes in
+// public/index.html) to show which notes were left out.
+function selectPinnedNotes(notes) {
+  const included = [];
+  const leftOut = [];
+  let used = 0;
+  for (const note of notes) {
+    const text = (note.content || '').trim();
+    if (!text) continue;
+    if (used + text.length <= PINNED_NOTES_CAP) {
+      used += text.length;
+      included.push({ ...note, content: text });
+    } else {
+      leftOut.push(note);
+    }
+  }
+  return { included, leftOut, used };
+}
+
+// The system prompt as blocks, in this order: base prompt, canvas
+// instructions, pinned notes. All of it is stable from one request to the
+// next, so the last block carries cache_control and the whole prefix can be
+// cached. Nothing that changes per request (times, counters) may go in here.
+async function buildSystemBlocks(nodeId) {
+  const blocks = [{ type: 'text', text: SYSTEM_PROMPT }];
+
+  const canvas = await pool.query(
+    `SELECT c.id, c.instructions
+       FROM canvases c
+       JOIN nodes n ON n.canvas_id = c.id
+      WHERE n.id = $1`,
+    [nodeId]
+  );
+  if (canvas.rowCount > 0) {
+    const instructions = (canvas.rows[0].instructions || '').trim();
+    if (instructions) {
+      blocks.push({
+        type: 'text',
+        text: `The user has set these instructions for every reply on this canvas. Follow them:\n\n${instructions}`,
+      });
+    }
+
+    const pinned = await pool.query(
+      `SELECT id, content, created_at
+         FROM stickies
+        WHERE canvas_id = $1 AND in_context
+        ORDER BY created_at DESC, id DESC`,
+      [canvas.rows[0].id]
+    );
+    const { included } = selectPinnedNotes(pinned.rows);
+    if (included.length > 0) {
+      const notes = included.map((note, i) => `Note ${i + 1}:\n${note.content}`).join('\n\n');
+      blocks.push({
+        type: 'text',
+        text: `The user has pinned these notes to this canvas as background. Treat them as facts and preferences to use when relevant:\n\n${notes}`,
+      });
+    }
+  }
+
+  blocks[blocks.length - 1].cache_control = { type: 'ephemeral' };
+  return blocks;
+}
+
 // --- Live streams ----------------------------------------------------------
 // While a node is being answered, its text so far and the connected
 // Server-Sent Events clients live here, in memory. The database gets the
@@ -260,7 +335,7 @@ async function answerNode(nodeId) {
     const stream = getAnthropic().messages.stream({
       model: ASK_MODEL,
       max_tokens: MAX_TOKENS,
-      system: SYSTEM_PROMPT,
+      system: await buildSystemBlocks(nodeId),
       messages,
     });
 
@@ -431,13 +506,33 @@ app.post('/api/canvases', async (req, res) => {
 
 app.get('/api/canvases/:id', async (req, res) => {
   const id = requireUuid(req.params.id, 'Canvas id');
-  const canvas = await pool.query('SELECT id, title, created_at FROM canvases WHERE id = $1', [id]);
+  const canvas = await pool.query('SELECT id, title, created_at, instructions FROM canvases WHERE id = $1', [id]);
   if (canvas.rowCount === 0) throw new HttpError(404, 'Canvas not found.');
   const [nodes, stickies] = await Promise.all([
     pool.query('SELECT * FROM nodes WHERE canvas_id = $1 ORDER BY created_at ASC, id ASC', [id]),
     pool.query('SELECT * FROM stickies WHERE canvas_id = $1 ORDER BY created_at ASC, id ASC', [id]),
   ]);
   res.json({ canvas: canvas.rows[0], nodes: nodes.rows, stickies: stickies.rows });
+});
+
+// Save the canvas instructions. Body: { instructions: string | null }.
+app.patch('/api/canvases/:id', async (req, res) => {
+  const id = requireUuid(req.params.id, 'Canvas id');
+  const body = req.body || {};
+  if (body.instructions === undefined) throw new HttpError(400, 'Nothing to update.');
+  if (body.instructions !== null && typeof body.instructions !== 'string') {
+    throw new HttpError(400, 'instructions must be a string or null.');
+  }
+  const instructions = body.instructions === null || body.instructions.trim() === '' ? null : body.instructions;
+  if (instructions && instructions.length > MAX_INSTRUCTIONS_CHARS) {
+    throw new HttpError(400, `instructions are too long (max ${MAX_INSTRUCTIONS_CHARS} characters).`);
+  }
+  const { rows } = await pool.query(
+    'UPDATE canvases SET instructions = $2 WHERE id = $1 RETURNING id, title, created_at, instructions',
+    [id, instructions]
+  );
+  if (rows.length === 0) throw new HttpError(404, 'Canvas not found.');
+  res.json(rows[0]);
 });
 
 // Save many node positions in one request (used by Tidy layout and its undo).
