@@ -5,6 +5,7 @@ const path = require('node:path');
 const express = require('express');
 const multer = require('multer');
 const mammoth = require('mammoth');
+const { PDFDocument } = require('pdf-lib');
 const { Pool } = require('pg');
 const { Anthropic } = require('@anthropic-ai/sdk');
 
@@ -18,7 +19,14 @@ const MAX_PROMPT_CHARS = 20000;
 const MAX_STICKY_CHARS = 10000;
 const MAX_BATCH_POSITIONS = 5000;
 const MAX_INSTRUCTIONS_CHARS = 20000;
-const PINNED_NOTES_CAP = 8000; // total characters of pinned-note text sent to the AI
+// AI context budget, per request. Whatever does not fit is left out whole and
+// reported with the reason; nothing is cut short.
+const CONTEXT_TEXT_CHARS = 40000;            // notes, text files, Word text
+const CONTEXT_MAX_PDFS = 3;
+const CONTEXT_MAX_PDF_PAGES = 100;
+const CONTEXT_MAX_IMAGES = 5;
+const CONTEXT_MAX_IMAGE_BYTES = 5 * 1024 * 1024;   // the API's own limit per image
+const CONTEXT_MAX_BINARY_BYTES = 20 * 1024 * 1024; // PDFs and images together, to stay well inside the request limit
 const STICKY_COLORS = ['yellow', 'green', 'blue', 'pink', 'purple'];
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // hard limit per uploaded file
 const MAX_FILE_NAME_CHARS = 200;
@@ -46,7 +54,9 @@ const INLINE_MIMES = new Set(['application/pdf', 'image/png', 'image/jpeg', 'ima
 const SYSTEM_PROMPT =
   'The user is exploring ideas on a branching canvas, where each exchange is a node and any node ' +
   'can be branched in a new direction. You see only the path of exchanges leading to the current ' +
-  'prompt. Answer the latest prompt clearly and concisely. You may use simple Markdown (bold, ' +
+  'prompt. Material the user has attached (notes, files, images) appears in the conversation as ' +
+  'labelled blocks such as [Note] or [File: name], placed before the prompt it belongs to; use it ' +
+  'when it is relevant. Answer the latest prompt clearly and concisely. You may use simple Markdown (bold, ' +
   'headings, lists, code) where it helps; do not use tables or images.';
 
 // ---------------------------------------------------------------------------
@@ -141,6 +151,13 @@ const SCHEMA_SQL = `
   -- nothing once that is done, so it is safe on every start.
   ALTER TABLE stickies ADD COLUMN IF NOT EXISTS context_mode text NOT NULL DEFAULT 'off';
   UPDATE stickies SET context_mode = 'canvas' WHERE in_context = true AND context_mode = 'off';
+
+  -- What a reply actually used: a list of { type, id, name }, written when the
+  -- reply is saved. Null on nodes answered before this existed.
+  ALTER TABLE nodes ADD COLUMN IF NOT EXISTS context_used jsonb NULL;
+  -- Page count of a PDF: null = not counted yet, 0 = could not be counted,
+  -- -1 = password-protected.
+  ALTER TABLE files ADD COLUMN IF NOT EXISTS pages int NULL;
 `;
 
 let schemaReady = false;
@@ -224,24 +241,6 @@ async function loadPath(nodeId) {
   return rows;
 }
 
-// Turn a path (root first, target node last) into alternating messages:
-// each ancestor contributes its prompt and its reply; the target node
-// contributes only its prompt, as the final user message.
-function pathToMessages(pathRows) {
-  const messages = [];
-  const last = pathRows.length - 1;
-  pathRows.forEach((row, i) => {
-    messages.push({ role: 'user', content: row.prompt });
-    if (i < last) {
-      if (!row.reply) {
-        throw new Error('A node earlier in this path has no reply yet, so this node cannot be answered.');
-      }
-      messages.push({ role: 'assistant', content: row.reply });
-    }
-  });
-  return messages;
-}
-
 function describeAiError(err) {
   if (err instanceof Anthropic.APIConnectionTimeoutError) {
     return 'The AI request timed out.';
@@ -258,75 +257,202 @@ function describeAiError(err) {
   return err && err.message ? err.message : String(err);
 }
 
-// --- Canvas context --------------------------------------------------------
-// Besides the path, every AI call on a canvas gets that canvas's instructions
-// and its pinned notes (stickies marked "Use as AI context"). Stickies that
-// are not pinned are never sent.
+// --- Context assembly ------------------------------------------------------
+// A node's AI context is: base system prompt, canvas instructions, everything
+// with canvas context, then the path from the root to the node, where each
+// node on the path carries the items attached to it with branch context.
+// Items attached to a sibling branch are never loaded, because only node ids
+// on the path are asked for.
 
-// Which pinned notes are sent. Notes come newest first; a note is included
-// while it still fits in the cap, otherwise it is left out. Empty notes are
-// skipped. The page applies the same rule (selectPinnedNotes in
-// public/index.html) to show which notes were left out.
-function selectPinnedNotes(notes) {
-  const included = [];
-  const leftOut = [];
-  let used = 0;
-  for (const note of notes) {
-    const text = (note.content || '').trim();
-    if (!text) continue;
-    if (used + text.length <= PINNED_NOTES_CAP) {
-      used += text.length;
-      included.push({ ...note, content: text });
-    } else {
-      leftOut.push(note);
-    }
+// Count a PDF's pages. 0 = could not be counted, -1 = password-protected.
+async function countPdfPages(buffer) {
+  try {
+    const pdf = await PDFDocument.load(buffer, { updateMetadata: false });
+    return pdf.getPageCount();
+  } catch (err) {
+    if (/encrypt/i.test(err.message || '')) return -1;
+    return 0;
   }
-  return { included, leftOut, used };
 }
 
-// The system prompt as blocks, in this order: base prompt, canvas
-// instructions, pinned notes. All of it is stable from one request to the
-// next, so the last block carries cache_control and the whole prefix can be
-// cached. Nothing that changes per request (times, counters) may go in here.
-async function buildSystemBlocks(nodeId) {
-  const blocks = [{ type: 'text', text: SYSTEM_PROMPT }];
+const noteName = (content) => {
+  const line = content.trim().split('\n')[0];
+  return line.length > 60 ? line.slice(0, 59) + '…' : line;
+};
+const kindOfMime = (mime) => (mime === 'application/pdf' ? 'pdf' : mime.startsWith('image/') ? 'image' : 'text');
 
+// Decide what the AI gets for one node. Returns the path and every context
+// item in priority order (the node's own items, then each ancestor's, nearest
+// first, then the canvas items), each marked included or left out with the
+// reason. Loads no file bytes and no text, only sizes.
+async function planContext(nodeId) {
+  const pathRows = await loadPath(nodeId);
+  if (pathRows.length === 0) return null;
+  const pathIds = pathRows.map((row) => row.id);
   const canvas = await pool.query(
-    `SELECT c.id, c.instructions
-       FROM canvases c
-       JOIN nodes n ON n.canvas_id = c.id
-      WHERE n.id = $1`,
+    `SELECT c.id, c.instructions FROM canvases c JOIN nodes n ON n.canvas_id = c.id WHERE n.id = $1`,
     [nodeId]
   );
-  if (canvas.rowCount > 0) {
-    const instructions = (canvas.rows[0].instructions || '').trim();
-    if (instructions) {
-      blocks.push({
-        type: 'text',
-        text: `The user has set these instructions for every reply on this canvas. Follow them:\n\n${instructions}`,
-      });
-    }
+  const canvasId = canvas.rows[0].id;
 
-    const pinned = await pool.query(
-      `SELECT id, content, created_at
+  const [stickies, files] = await Promise.all([
+    pool.query(
+      `SELECT id, content, node_id, context_mode, created_at
          FROM stickies
-        WHERE canvas_id = $1 AND in_context
-        ORDER BY created_at DESC, id DESC`,
-      [canvas.rows[0].id]
-    );
-    const { included } = selectPinnedNotes(pinned.rows);
-    if (included.length > 0) {
-      const notes = included.map((note, i) => `Note ${i + 1}:\n${note.content}`).join('\n\n');
-      blocks.push({
-        type: 'text',
-        text: `The user has pinned these notes to this canvas as background. Treat them as facts and preferences to use when relevant:\n\n${notes}`,
-      });
+        WHERE canvas_id = $1
+          AND (context_mode = 'canvas' OR (context_mode = 'branch' AND node_id = ANY($2::uuid[])))`,
+      [canvasId, pathIds]
+    ),
+    pool.query(
+      `SELECT id, name, mime, size, status, error, pages, node_id, context_mode, created_at,
+              char_length(text_content) AS text_chars
+         FROM files
+        WHERE canvas_id = $1
+          AND (context_mode = 'canvas' OR (context_mode = 'branch' AND node_id = ANY($2::uuid[])))`,
+      [canvasId, pathIds]
+    ),
+  ]);
+
+  // PDFs uploaded before pages were counted: count them once, now.
+  for (const file of files.rows) {
+    if (file.mime !== 'application/pdf' || file.pages !== null) continue;
+    const { rows } = await pool.query('SELECT data FROM files WHERE id = $1', [file.id]);
+    file.pages = rows.length > 0 ? await countPdfPages(rows[0].data) : 0;
+    await pool.query('UPDATE files SET pages = $2 WHERE id = $1', [file.id, file.pages]);
+  }
+
+  const all = [
+    ...stickies.rows.map((st) => ({
+      type: 'note', id: st.id, kind: 'text', name: noteName(st.content) || '(empty note)',
+      chars: st.content.trim().length, row: st,
+    })),
+    ...files.rows.map((f) => ({
+      type: 'file', id: f.id, kind: kindOfMime(f.mime), name: f.name, mime: f.mime,
+      chars: f.text_chars || 0, bytes: f.size, pages: f.pages, row: f,
+    })),
+  ];
+  // Newest first inside each group.
+  const newestFirst = (x, y) => (x.row.created_at > y.row.created_at ? -1 : x.row.created_at < y.row.created_at ? 1 : x.id > y.id ? -1 : 1);
+  const titleOf = new Map(pathRows.map((row) => [row.id, row.prompt.replace(/\s+/g, ' ').trim().slice(0, 60)]));
+
+  const ordered = [];
+  for (let i = pathRows.length - 1; i >= 0; i--) {
+    const nodeIdOnPath = pathRows[i].id;
+    const group = all.filter((item) => item.row.context_mode === 'branch' && item.row.node_id === nodeIdOnPath).sort(newestFirst);
+    for (const item of group) ordered.push({ ...item, scope: 'branch', node_id: nodeIdOnPath, node_title: titleOf.get(nodeIdOnPath) });
+  }
+  for (const item of all.filter((it) => it.row.context_mode === 'canvas').sort(newestFirst)) {
+    ordered.push({ ...item, scope: 'canvas', node_id: null, node_title: null });
+  }
+
+  const used = { chars: 0, pdfs: 0, images: 0, bytes: 0 };
+  const leave = (item, code, text) => { item.included = false; item.reason = { code, text }; };
+  for (const item of ordered) {
+    item.included = true;
+    item.reason = null;
+    if (item.type === 'file' && item.row.status === 'error') {
+      leave(item, 'error', item.row.error || 'This file could not be read.');
+    } else if (item.kind === 'text') {
+      if (item.chars === 0) leave(item, 'empty', item.type === 'note' ? 'The note is empty.' : 'The file has no text.');
+      else if (used.chars + item.chars > CONTEXT_TEXT_CHARS) {
+        leave(item, 'budget', `Over the text budget: it has ${item.chars.toLocaleString('en-GB')} characters and ${Math.max(0, CONTEXT_TEXT_CHARS - used.chars).toLocaleString('en-GB')} of ${CONTEXT_TEXT_CHARS.toLocaleString('en-GB')} are left.`);
+      } else used.chars += item.chars;
+    } else if (item.kind === 'pdf') {
+      if (item.pages === -1) leave(item, 'unsupported', 'Password-protected PDFs cannot be read by the AI.');
+      else if (item.pages > CONTEXT_MAX_PDF_PAGES) leave(item, 'budget', `The PDF has ${item.pages} pages (max ${CONTEXT_MAX_PDF_PAGES}).`);
+      else if (used.pdfs >= CONTEXT_MAX_PDFS) leave(item, 'budget', `Over the PDF limit (${CONTEXT_MAX_PDFS} per prompt).`);
+      else if (used.bytes + item.bytes > CONTEXT_MAX_BINARY_BYTES) leave(item, 'budget', 'Over the size budget for PDFs and images in one prompt (20 MB).');
+      else { used.pdfs += 1; used.bytes += item.bytes; }
+    } else {
+      if (item.bytes > CONTEXT_MAX_IMAGE_BYTES) leave(item, 'unsupported', 'The image is over 5 MB, which is more than the AI accepts.');
+      else if (used.images >= CONTEXT_MAX_IMAGES) leave(item, 'budget', `Over the image limit (${CONTEXT_MAX_IMAGES} per prompt).`);
+      else if (used.bytes + item.bytes > CONTEXT_MAX_BINARY_BYTES) leave(item, 'budget', 'Over the size budget for PDFs and images in one prompt (20 MB).');
+      else { used.images += 1; used.bytes += item.bytes; }
     }
   }
 
+  return { pathRows, items: ordered, used, instructions: (canvas.rows[0].instructions || '').trim() };
+}
+
+// The system prompt: base prompt and canvas instructions. Stable from one
+// request to the next, so the last block carries cache_control.
+function buildSystemBlocks(plan) {
+  const blocks = [{ type: 'text', text: SYSTEM_PROMPT }];
+  if (plan.instructions) {
+    blocks.push({
+      type: 'text',
+      text: `The user has set these instructions for every reply on this canvas. Follow them:\n\n${plan.instructions}`,
+    });
+  }
   blocks[blocks.length - 1].cache_control = { type: 'ephemeral' };
   return blocks;
 }
+
+// Content blocks for a list of included items: PDFs as document blocks,
+// images as image blocks, everything else as labelled text. Items go oldest
+// first, so the blocks stay in the same order from one request to the next.
+async function blocksFor(items) {
+  const sorted = [...items].sort((x, y) => (x.row.created_at < y.row.created_at ? -1 : x.row.created_at > y.row.created_at ? 1 : x.id < y.id ? -1 : 1));
+  const blocks = [];
+  for (const item of sorted) {
+    if (item.type === 'note') {
+      blocks.push({ type: 'text', text: `[Note]\n${item.row.content.trim()}` });
+      continue;
+    }
+    if (item.kind === 'text') {
+      const { rows } = await pool.query('SELECT text_content FROM files WHERE id = $1', [item.id]);
+      if (rows.length > 0 && rows[0].text_content) blocks.push({ type: 'text', text: `[File: ${item.name}]\n${rows[0].text_content}` });
+      continue;
+    }
+    const { rows } = await pool.query('SELECT data FROM files WHERE id = $1', [item.id]);
+    if (rows.length === 0) continue; // deleted since the plan was made
+    const data = rows[0].data.toString('base64');
+    if (item.kind === 'pdf') {
+      blocks.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data }, title: item.name });
+    } else {
+      blocks.push({ type: 'text', text: `[Image: ${item.name}]` });
+      blocks.push({ type: 'image', source: { type: 'base64', media_type: item.mime, data } });
+    }
+  }
+  return blocks;
+}
+
+// Turn a plan into alternating messages. Each ancestor contributes its prompt
+// and its reply; the target node contributes only its prompt, as the final
+// user message. Canvas items open the first user message, before the root
+// prompt, with cache_control on the last of them. A node's branch items sit
+// in that node's user message, before its prompt.
+async function buildMessages(plan) {
+  const included = plan.items.filter((item) => item.included);
+  const messages = [];
+  const last = plan.pathRows.length - 1;
+  for (let i = 0; i <= last; i++) {
+    const row = plan.pathRows[i];
+    const blocks = [];
+    if (i === 0) {
+      const canvasBlocks = await blocksFor(included.filter((item) => item.scope === 'canvas'));
+      if (canvasBlocks.length > 0) canvasBlocks[canvasBlocks.length - 1].cache_control = { type: 'ephemeral' };
+      blocks.push(...canvasBlocks);
+    }
+    blocks.push(...await blocksFor(included.filter((item) => item.scope === 'branch' && item.node_id === row.id)));
+    if (blocks.length === 0) messages.push({ role: 'user', content: row.prompt });
+    else messages.push({ role: 'user', content: [...blocks, { type: 'text', text: row.prompt }] });
+    if (i < last) {
+      if (!row.reply) {
+        throw new Error('A node earlier in this path has no reply yet, so this node cannot be answered.');
+      }
+      messages.push({ role: 'assistant', content: row.reply });
+    }
+  }
+  return messages;
+}
+
+// What the page is told about a plan (no row data).
+const publicItem = (item) => ({
+  type: item.type, id: item.id, name: item.name, kind: item.kind,
+  scope: item.scope, node_id: item.node_id, node_title: item.node_title,
+  included: item.included, reason: item.reason,
+});
 
 // --- Live streams ----------------------------------------------------------
 // While a node is being answered, its text so far and the connected
@@ -383,17 +509,19 @@ async function answerNode(nodeId) {
   };
 
   try {
-    const pathRows = await loadPath(nodeId);
-    if (pathRows.length === 0) { // node was deleted meanwhile
+    const plan = await planContext(nodeId);
+    if (!plan) { // node was deleted meanwhile
       endLive(nodeId, 'gone', {});
       return;
     }
-    const messages = pathToMessages(pathRows);
+    const messages = await buildMessages(plan);
+    // Recorded with the reply, so the reader can show what it actually used.
+    const contextUsed = plan.items.filter((item) => item.included).map((item) => ({ type: item.type, id: item.id, name: item.name }));
 
     const stream = getAnthropic().messages.stream({
       model: ASK_MODEL,
       max_tokens: MAX_TOKENS,
-      system: await buildSystemBlocks(nodeId),
+      system: buildSystemBlocks(plan),
       messages,
     });
 
@@ -428,10 +556,10 @@ async function answerNode(nodeId) {
 
     const { rows } = await pool.query(
       `UPDATE nodes
-          SET status = 'done', reply = $2, model = $3, error = NULL, updated_at = now()
+          SET status = 'done', reply = $2, model = $3, error = NULL, context_used = $4::jsonb, updated_at = now()
         WHERE id = $1 AND status = 'pending'
         RETURNING *`,
-      [nodeId, reply, response.model || ASK_MODEL]
+      [nodeId, reply, response.model || ASK_MODEL, JSON.stringify(contextUsed)]
     );
     if (rows.length > 0) endLive(nodeId, 'done', rows[0]);
     else endLive(nodeId, 'gone', {});
@@ -689,6 +817,20 @@ app.get('/api/nodes/:id', async (req, res) => {
   res.json(rows[0]);
 });
 
+// What this node sees: every context item on its path or on the whole canvas,
+// in priority order, each included or left out with the reason. This is what
+// the AI gets for this node if it is asked now, and for a new prompt from it.
+app.get('/api/nodes/:id/context', async (req, res) => {
+  const id = requireUuid(req.params.id, 'Node id');
+  const plan = await planContext(id);
+  if (!plan) throw new HttpError(404, 'Node not found.');
+  res.json({
+    items: plan.items.map(publicItem),
+    used: { chars: plan.used.chars, pdfs: plan.used.pdfs, images: plan.used.images },
+    limits: { chars: CONTEXT_TEXT_CHARS, pdfs: CONTEXT_MAX_PDFS, images: CONTEXT_MAX_IMAGES, pdf_pages: CONTEXT_MAX_PDF_PAGES },
+  });
+});
+
 // Server-Sent Events for one node. Events:
 //   snapshot { text }  the reply so far, sent once on connect
 //   delta    { text }  the next piece of text
@@ -752,7 +894,7 @@ app.post('/api/nodes/:id/retry', async (req, res) => {
   // so two simultaneous retries cannot both start an AI call.
   const { rows } = await pool.query(
     `UPDATE nodes
-        SET status = 'pending', error = NULL, reply = NULL, updated_at = now()
+        SET status = 'pending', error = NULL, reply = NULL, context_used = NULL, updated_at = now()
       WHERE id = $1 AND status = 'error'
       RETURNING *`,
     [id]
@@ -987,11 +1129,13 @@ app.post('/api/canvases/:id/files', receiveUpload, async (req, res) => {
     }
   }
 
+  const pages = type.kind === 'pdf' ? await countPdfPages(data) : null;
+
   const { rows } = await pool.query(
-    `INSERT INTO files (canvas_id, name, mime, size, data, text_content, status, error, x, y, node_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    `INSERT INTO files (canvas_id, name, mime, size, data, text_content, status, error, x, y, node_id, pages)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
      RETURNING ${FILE_COLUMNS}`,
-    [canvasId, name, type.mime, data.length, data, text, status, error, x, y, nodeId]
+    [canvasId, name, type.mime, data.length, data, text, status, error, x, y, nodeId, pages]
   );
   res.status(201).json(rows[0]);
 });

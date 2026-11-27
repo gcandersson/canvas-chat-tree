@@ -948,6 +948,16 @@
     .world.picking .card:hover { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent), 0 4px 16px var(--shadow-1); }
     .world.picking .card * { cursor: copy; }
 
+    /* What this node sees (top of the reader panel) */
+    .see { margin: 0 0 22px; padding: 0 0 16px; border-bottom: 1px solid var(--border); }
+    /* A long list scrolls by itself, so the prompt and reply stay close. */
+    .see-list { max-height: 264px; overflow-y: auto; padding-right: 4px; }
+    .see-note { margin: 0 0 8px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+    .see-note b { color: var(--text-soft); font-weight: 600; }
+    .see-reason { margin: -2px 0 8px 12px; font-size: 12px; color: var(--error); overflow-wrap: anywhere; }
+    .ctx-note .tag.ok { color: var(--ok); }
+    .ctx-note .glyph { flex: none; display: inline-flex; color: var(--muted); }
+
     /* Context panel: groups of branch items */
     .ctx-group { display: block; width: 100%; height: auto; margin: 12px 0 6px; padding: 0; border: 0; background: none; text-align: left; font-weight: 600; white-space: normal; overflow-wrap: anywhere; }
     .ctx-group:hover:not(:disabled) { background: none; text-decoration: underline; }
@@ -1766,7 +1776,85 @@
       if (!ok) throw new Error('The browser blocked copying.');
     }
 
-    function Reader({ node, liveText, pendingSince, retry, onClose, onContinue, onBranch, onRetry }) {
+    const NoteIcon = () => html`
+      <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
+        <path d="M2.5 2.5h11v7l-4 4h-7z" /><path d="M13.5 9.5h-4v4" />
+      </svg>`;
+
+    // "What this node sees": every context item on the node's path or on the
+    // whole canvas, whether the AI gets it, and if not, why. The server works
+    // it out (the same code that builds the real request), so this never
+    // drifts from what is actually sent. sig changes whenever a bubble's
+    // context changes, and the list is then loaded again.
+    function NodeContext({ node, sig, onShow }) {
+      const [state, setState] = useState({ status: 'loading', data: null, error: null, forNode: node.id });
+      const [attempt, setAttempt] = useState(0);
+      useEffect(() => {
+        let current = true;
+        const fresh = state.forNode !== node.id || !state.data;
+        if (fresh) setState({ status: 'loading', data: null, error: null, forNode: node.id });
+        // A changed bubble is saved first; give the save a moment before asking.
+        const timer = setTimeout(() => {
+          api(`/api/nodes/${node.id}/context`).then(
+            (data) => { if (current) setState({ status: 'ready', data, error: null, forNode: node.id }); },
+            (err) => { if (current) setState((prev) => ({ ...prev, status: 'error', error: err.message, forNode: node.id })); });
+        }, fresh ? 0 : 500);
+        return () => { current = false; clearTimeout(timer); };
+      }, [node.id, sig, attempt, node.status]);
+
+      const data = state.forNode === node.id ? state.data : null;
+      const used = Array.isArray(node.context_used) ? node.context_used : null;
+      const n = (value) => value.toLocaleString('en-GB');
+
+      let lead = null;
+      if (node.status === 'done' && used) {
+        lead = html`
+          <p class="see-note">${used.length === 0
+            ? 'This reply was written without any attached material.'
+            : html`This reply used: ${used.map((u, i) => html`${i > 0 ? ', ' : ''}<b>${u.name}</b>`)}.`}</p>
+          <p class="see-note">A new prompt from this node gets:</p>`;
+      } else if (node.status === 'done') {
+        lead = html`<p class="see-note">A new prompt from this node gets:</p>`;
+      } else if (node.status === 'error') {
+        lead = html`<p class="see-note">A retry gets:</p>`;
+      }
+
+      let body;
+      if (!data && state.status === 'error') {
+        body = html`<div class="ctx-state bad"><span class="clip" title=${state.error}>Could not load: ${state.error}</span><button onClick=${() => setAttempt((a) => a + 1)}>Retry</button></div>`;
+      } else if (!data) {
+        body = html`<div class="ctx-state"><${Spinner} label="Loading…" /></div>`;
+      } else if (data.items.length === 0) {
+        body = html`<div class="ctx-empty">Nothing. No note or file is attached to this node's path with “This branch”, and nothing is set to “Whole canvas”.</div>`;
+      } else {
+        body = html`
+          ${lead}
+          <div class="see-list scroll">
+          ${data.items.map((item) => html`
+            <div key=${item.type + item.id}>
+              <div class=${'ctx-note' + (item.included ? '' : ' out')}>
+                ${item.type === 'file' ? html`<${FileIcon} name=${item.name} />` : html`<span class="glyph"><${NoteIcon} /></span>`}
+                <button class="line" onClick=${() => onShow(item.type === 'file' ? 'file' : 'sticky', item.id)} title="Show it on the canvas">${item.name}</button>
+                <span class="tag" title=${item.scope === 'canvas' ? 'Set to Whole canvas' : `Attached to “${item.node_title}” with This branch`}>${item.scope === 'canvas' ? 'whole canvas' : item.node_id === node.id ? 'this node' : `from “${snippet(item.node_title || '', 18)}”`}</span>
+                <span class=${'tag ' + (item.included ? 'ok' : 'bad')}>${item.included ? 'included' : 'left out'}</span>
+              </div>
+              ${!item.included && item.reason && html`<div class="see-reason">${item.reason.text}</div>`}
+            </div>`)}
+          </div>
+          ${state.status === 'error' && html`<div class="ctx-state bad"><span class="clip" title=${state.error}>Could not refresh: ${state.error}</span><button onClick=${() => setAttempt((a) => a + 1)}>Retry</button></div>`}`;
+      }
+
+      return html`
+        <div class="see">
+          <div class="reader-label">
+            What this node sees
+            ${data && data.items.length > 0 && html`<small>${data.items.filter((i) => i.included).length} of ${data.items.length} included · ${n(data.used.chars)} of ${n(data.limits.chars)} characters · ${data.used.pdfs}/${data.limits.pdfs} PDFs · ${data.used.images}/${data.limits.images} images</small>`}
+          </div>
+          ${data && data.items.length === 0 ? html`${node.status === 'done' && used && used.length > 0 && html`<p class="see-note">This reply used: ${used.map((u, i) => html`${i > 0 ? ', ' : ''}<b>${u.name}</b>`)}.</p>`}${body}` : body}
+        </div>`;
+    }
+
+    function Reader({ node, liveText, pendingSince, retry, contextSig, onShowBubble, onClose, onContinue, onBranch, onRetry }) {
       const [copy, setCopy] = useState({ state: 'idle', error: null }); // idle | busy | done | failed
       const copyTimer = useRef(null);
       useEffect(() => () => clearTimeout(copyTimer.current), []);
@@ -1820,6 +1908,7 @@
             <button class="close" onClick=${onClose} aria-label="Close reader" title="Close (Esc)">×</button>
           </div>
           <div class="reader-scroll scroll">
+            <${NodeContext} node=${node} sig=${contextSig} onShow=${onShowBubble} />
             <div class="reader-label">Prompt</div>
             <div class="reader-prompt">${node.prompt}</div>
             <div class="reader-label">Reply ${node.model && html`<small>${node.model}</small>`}</div>
@@ -1865,7 +1954,7 @@
         if (dirty.current) onSaveInstructions(canvas.id, draftRef.current).catch(() => {});
       }, []);
 
-      const { pinned, included, leftOut, used } = selectPinnedNotes(stickies);
+      const pinned = stickies.filter((st) => modeOf(st) === 'canvas');
       const canvasFiles = files.filter((f) => modeOf(f) === 'canvas');
       const canvasCount = pinned.length + canvasFiles.length;
 
@@ -1880,16 +1969,15 @@
       }
       const branchCount = groups.reduce((sum, g) => sum + g.items.length, 0);
 
-      const row = (kind, item, tags) => {
+      const row = (kind, item) => {
         const empty = kind === 'sticky' && !(item.content || '').trim();
         return html`
-          <div key=${kind + item.id} class=${'ctx-note' + (empty || (tags && tags.out) ? ' out' : '')}>
+          <div key=${kind + item.id} class=${'ctx-note' + (empty ? ' out' : '')}>
             ${kind === 'sticky'
               ? html`<span class="swatch" style=${{ '--dot': STICKY_LINE[item.color] || STICKY_LINE.yellow }}></span>`
               : html`<${FileIcon} name=${item.name} />`}
             <button class="line" onClick=${() => onShowBubble(kind, item.id)} title="Show it on the canvas">${kind === 'file' ? item.name : empty ? '(empty note)' : firstLine(item.content)}</button>
             ${empty && html`<span class="tag">empty, not sent</span>`}
-            ${tags && tags.out && !empty && html`<span class="tag bad">left out</span>`}
             <button class="unpin" onClick=${() => onSetMode(kind, item.id, 'off')} title="Set its AI context to Off">Turn off</button>
           </div>`;
       };
@@ -1910,6 +1998,7 @@
           </div>
           <div class="reader-scroll scroll">
             <p class="ctx-intro">What the AI is given on this canvas, besides the path to the node. Other canvases are not affected.</p>
+            <p class="ctx-intro">Each prompt can carry up to 40,000 characters of notes and text files, 3 PDFs (100 pages each) and 5 images. When there is more, the items closest to the node win and whole-canvas items go last. Open a node with Expand to see exactly what it gets.</p>
 
             <div class="reader-label">Instructions</div>
             <textarea
@@ -1923,17 +2012,11 @@
 
             <div class="reader-label">
               Whole canvas
-              <small>${canvasCount === 0 ? 'nothing' : `${canvasCount} ${canvasCount === 1 ? 'item' : 'items'}${pinned.length > 0 ? ` · notes use ${used.toLocaleString('en-GB')} of ${PINNED_NOTES_CAP.toLocaleString('en-GB')} characters` : ''}`}</small>
+              <small>${canvasCount === 0 ? 'nothing' : `${canvasCount} ${canvasCount === 1 ? 'item' : 'items'}`}</small>
             </div>
-            ${leftOut.length > 0 && html`
-              <div class="ctx-warning" role="alert">
-                Pinned notes are limited to ${PINNED_NOTES_CAP.toLocaleString('en-GB')} characters in total. Newest notes go first, and
-                ${leftOut.length === 1 ? ' this note does not fit, so it is not sent to the AI:' : ' these notes do not fit, so they are not sent to the AI:'}
-                <ul>${leftOut.map((st) => html`<li key=${st.id}>${firstLine(st.content)}</li>`)}</ul>
-              </div>`}
             ${canvasCount === 0 && html`
               <div class="ctx-empty">Nothing yet. Open the context control on a sticky or a file and choose “Whole canvas” to give it to every node on this canvas.</div>`}
-            ${pinned.map((st) => row('sticky', st, { out: !!(st.content || '').trim() && !included.has(st.id) }))}
+            ${pinned.map((st) => row('sticky', st))}
             ${canvasFiles.map((f) => row('file', f))}
 
             <div class="reader-label ctx-section">
@@ -2034,31 +2117,6 @@
     }
 
     // --- Canvas context -----------------------------------------------------
-
-    const PINNED_NOTES_CAP = 8000; // total characters of pinned-note text sent to the AI
-
-    // Which pinned notes the AI gets. Same rule as selectPinnedNotes in
-    // server.js: newest first; a note is included while it still fits in the
-    // cap, otherwise it is left out; empty notes are skipped.
-    function selectPinnedNotes(stickies) {
-      const pinned = stickies
-        .filter((st) => modeOf(st) === 'canvas')
-        .sort((a, b) => (a.created_at > b.created_at ? -1 : a.created_at < b.created_at ? 1 : a.id > b.id ? -1 : 1));
-      const included = new Set();
-      const leftOut = [];
-      let used = 0;
-      for (const st of pinned) {
-        const text = (st.content || '').trim();
-        if (!text) continue;
-        if (used + text.length <= PINNED_NOTES_CAP) {
-          used += text.length;
-          included.add(st.id);
-        } else {
-          leftOut.push(st);
-        }
-      }
-      return { pinned, included, leftOut, used };
-    }
 
     const firstLine = (text) => {
       const line = (text || '').trim().split('\n')[0];
@@ -3745,6 +3803,11 @@
           onLinkStart, onLinkMove, onLinkEnd,
         };
       };
+      // Changes whenever anything that affects a node's context changes (and
+      // again when a save finishes), so the reader reloads "What this node sees".
+      const contextSig = doc.stickies.map((st) => `${st.id}:${modeOf(st)}:${st.node_id || ''}:${(st.content || '').length}`).join('|')
+        + '#' + doc.files.map((f) => `${f.id}:${modeOf(f)}:${f.node_id || ''}`).join('|')
+        + '#' + Object.values(stickySaves).filter((sv) => sv.state === 'saving').length;
       const pickItem = attachPick ? findBubble(attachPick.kind, attachPick.id) : null;
       const pickName = pickItem ? (attachPick.kind === 'file' ? pickItem.name : snippet(firstLine(pickItem.content) || 'this note', 40)) : '';
       const showGhost = composer && composer.x !== null && !isEmpty;
@@ -3988,6 +4051,8 @@
               liveText=${liveText[readerNode.id]}
               pendingSince=${readerNode.status === 'pending' ? (pendingSince.current[readerNode.id] || Date.parse(readerNode.updated_at)) : null}
               retry=${retries[readerNode.id]}
+              contextSig=${contextSig}
+              onShowBubble=${showBubble}
               onClose=${() => setReaderId(null)}
               onContinue=${fromReader('continue')}
               onBranch=${fromReader('branch')}
