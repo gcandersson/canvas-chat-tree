@@ -93,6 +93,14 @@
       --sticky-btn-border-hover: rgba(255, 255, 255, 0.4);
       --sticky-dot-border: rgba(255, 255, 255, 0.25);
       --sticky-error: #ffb4b5;
+
+      /* File type badges: the same in both themes, light text on a mid tone */
+      --file-pdf: #d1483f;
+      --file-image: #2f9a6c;
+      --file-text: #6b7385;
+      --file-word: #2f6fd6;
+      --file-other: #8a8f9c;
+      --file-on: #ffffff;
     }
 
     /* Light theme: neutral greys and white, no warm tones. */
@@ -261,12 +269,14 @@
     .card.active { border-color: var(--highlight); box-shadow: 0 0 0 1px var(--highlight), 0 0 20px 3px var(--highlight-glow), 0 4px 16px var(--shadow-1); }
 
     /* While a path is selected, everything that is not on it steps back. */
-    .card, .sticky, .edges path, .edges line { transition: opacity 0.15s ease; }
+    .card, .sticky, .filebub, .edges path, .edges line { transition: opacity 0.15s ease; }
     .world.has-path .card:not(.active),
     .world.has-path .sticky:not(.onpath),
+    .world.has-path .filebub:not(.onpath),
     .world.has-path .edges path:not(.active):not(.draft),
     .world.has-path .edges line.tether:not(.onpath) { opacity: 0.45; }
     .card.target { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 4px 16px var(--shadow-1); }
+    .card.drop { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent), 0 4px 16px var(--shadow-1); }
     .card.dragging { z-index: 1; box-shadow: 0 10px 28px var(--shadow-3); }
     .card.dragging .card-head { cursor: grabbing; }
     .card-badge {
@@ -488,6 +498,156 @@
     .sticky-bar .inline-status { font-size: 11px; color: inherit; }
     .sticky-bar .spin { width: 10px; height: 10px; }
     .edges line.tether { stroke-width: 1.5; stroke-dasharray: 4 5; stroke-linecap: round; }
+
+    /* File bubbles: uploaded files on the canvas */
+    .filebub {
+      position: absolute;
+      width: 220px;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      background: var(--panel);
+      border: 1px solid var(--border-strong);
+      border-radius: 8px;
+      box-shadow: 0 6px 18px var(--shadow-2);
+      cursor: grab;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .filebub.dragging { cursor: grabbing; z-index: 3; box-shadow: 0 12px 28px var(--shadow-3); }
+    .filebub.reading { box-shadow: 0 0 0 2px var(--reading-ring), 0 6px 18px var(--shadow-2); }
+    .filebub.bad { border-color: var(--error); }
+    .filebub.uploading { cursor: default; border-style: dashed; }
+    /* An error message may need more room than a preview does. */
+    .filebub.uploading .filebub-preview { height: auto; min-height: 110px; padding: 8px 0; }
+    .filebub-head { display: flex; align-items: flex-start; gap: 8px; padding: 9px 10px 7px; }
+    .filebub-name {
+      font-weight: 600;
+      font-size: 13px;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .filebub-size { font-size: 11px; color: var(--muted); }
+    .file-icon {
+      flex: none;
+      min-width: 34px;
+      height: 20px;
+      padding: 0 5px;
+      border-radius: 4px;
+      background: var(--file-other);
+      color: var(--file-on);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .file-icon.k-pdf { background: var(--file-pdf); }
+    .file-icon.k-image { background: var(--file-image); }
+    .file-icon.k-text { background: var(--file-text); }
+    .file-icon.k-word { background: var(--file-word); }
+    .file-icon.big { min-width: 56px; height: 34px; font-size: 15px; border-radius: 6px; }
+    .filebub-preview {
+      height: 110px;
+      margin: 0 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+    }
+    .filebub-preview img { display: block; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+    .filebub-preview .lines {
+      align-self: stretch;
+      width: 100%;
+      padding: 6px 8px;
+      font-size: 11px;
+      line-height: 1.4;
+      text-align: left;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      overflow: hidden;
+    }
+    .filebub-preview .stack { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 0 10px; min-width: 0; width: 100%; }
+    .filebub-preview .err { color: var(--error); overflow-wrap: anywhere; }
+    .filebub-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 32px;
+      padding: 5px 8px 7px 10px;
+      font-size: 11px;
+      color: var(--muted);
+      cursor: default;
+    }
+    .filebub-bar button { flex: none; height: 20px; padding: 0 6px; font-size: 11px; }
+    .filebub-bar .x { width: 20px; padding: 0; }
+    .filebub-bar .state { margin-right: auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    .filebub-bar .state.bad { color: var(--error); }
+    .filebub-bar .inline-status { font-size: 11px; }
+    .filebub-bar .spin { width: 10px; height: 10px; }
+    .progress { width: 100%; height: 6px; border-radius: 3px; background: var(--panel-3); border: 1px solid var(--border); overflow: hidden; }
+    .progress > i { display: block; height: 100%; background: var(--accent); transition: width 0.15s linear; }
+    .percent { font-variant-numeric: tabular-nums; }
+
+    /* Shown while files are dragged over the canvas */
+    .drop-hint {
+      position: absolute;
+      left: 50%;
+      top: 12px;
+      transform: translateX(-50%);
+      z-index: 4;
+      max-width: calc(100% - 32px);
+      padding: 8px 14px;
+      background: var(--accent);
+      color: var(--on-accent);
+      font-weight: 600;
+      border-radius: 10px;
+      box-shadow: 0 6px 18px var(--shadow-2);
+      pointer-events: none;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .viewport.dropping { outline: 3px dashed var(--accent); outline-offset: -3px; }
+
+    /* A file open in the reader panel */
+    a.btn {
+      display: inline-flex;
+      align-items: center;
+      height: 28px;
+      padding: 2px 10px;
+      font-size: 13px;
+      color: var(--text);
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      text-decoration: none;
+      white-space: nowrap;
+      flex: none;
+    }
+    a.btn:hover { border-color: var(--border-strong); background: var(--panel-3); }
+    a.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    .reader-bar .file-title { font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .reader-scroll.flush { padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+    .file-frame { flex: 1; width: 100%; border: 0; background: var(--bg); }
+    .file-foot { flex: none; padding: 6px 12px; font-size: 12px; color: var(--muted); border-top: 1px solid var(--border); }
+    .file-foot a, .file-note a { color: var(--accent); }
+    .file-image { display: block; max-width: 100%; height: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+    .file-text { font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-soft); }
+    .file-text.prose { font: inherit; font-size: 15px; line-height: 1.6; }
+    .file-note { margin: 0 0 12px; color: var(--muted); font-size: 12px; }
 
     /* Where the node being written will land */
     .ghost {
@@ -799,6 +959,24 @@
     // Dot, connector and minimap colour for each sticky colour: the theme's line colour.
     const STICKY_LINE = Object.fromEntries(STICKY_COLORS.map((c) => [c, `var(--sticky-${c}-line)`]));
     const DRAG_THRESHOLD = 5;  // a press that moves less than this many pixels is a click, not a drag
+    const FILE_W = 220;        // width of a file bubble
+    const FILE_H = 200;        // its height before it has been measured
+    const MAX_FILE_BYTES = 10 * 1024 * 1024;          // same hard limit as the server
+    const STORAGE_WARN_BYTES = 200 * 1024 * 1024;     // warn when one canvas stores more than this
+    const FILE_TEXT_LIMIT = 200000;                   // most characters of a file's text shown in the reader
+    // Accepted file endings and the kind of file each one is.
+    const FILE_KINDS = { pdf: 'pdf', png: 'image', jpg: 'image', jpeg: 'image', webp: 'image', gif: 'image', txt: 'text', md: 'text', csv: 'text', docx: 'word' };
+    const FILE_ACCEPT = Object.keys(FILE_KINDS).map((ext) => '.' + ext).join(',');
+    const ACCEPTED_LABEL = 'PDF, PNG, JPG, WEBP, GIF, TXT, MD, CSV and DOCX';
+    const KIND_LABEL = { pdf: 'PDF document', image: 'Image', text: 'Text file', word: 'Word document', other: 'File' };
+    const fileExt = (name) => (name.includes('.') ? name.split('.').pop().toLowerCase() : '');
+    const fileKind = (name) => FILE_KINDS[fileExt(name)] || 'other';
+    function formatBytes(bytes) {
+      if (bytes < 1024) return bytes + ' B';
+      if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
+      const mb = bytes / (1024 * 1024);
+      return (mb < 10 ? mb.toFixed(1) : Math.round(mb)) + ' MB';
+    }
 
     const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
     const snippet = (text, max = 60) => {
@@ -883,7 +1061,7 @@
       return html`<span class="count">${Math.max(0, Math.ceil((until - now) / 1000))}s</span>`;
     }
 
-    function Card({ node, colour, isActive, liveText, isTarget, isDragging, isReading, pendingSince, pollError, retry, move, onHeight, onContinue, onBranch, onRetry, onExpand, onAddSticky, descendants, isCollapsed, onToggleCollapse, onDragStart, onDragMove, onDragEnd, onSaveRetry }) {
+    function Card({ node, colour, isActive, liveText, isTarget, isDrop, isDragging, isReading, pendingSince, pollError, retry, move, onHeight, onContinue, onBranch, onRetry, onExpand, onAddSticky, descendants, isCollapsed, onToggleCollapse, onDragStart, onDragMove, onDragEnd, onSaveRetry }) {
       const ref = useRef(null);
       const bodyRef = useRef(null);
       const stickToBottom = useRef(true);
@@ -959,8 +1137,9 @@
 
       return html`
         <div
-          class=${'card ' + node.status + (isTarget ? ' target' : '') + (isDragging ? ' dragging' : '') + (isReading ? ' reading' : '') + (isActive ? ' active' : '')}
+          class=${'card ' + node.status + (isTarget ? ' target' : '') + (isDragging ? ' dragging' : '') + (isReading ? ' reading' : '') + (isActive ? ' active' : '') + (isDrop ? ' drop' : '')}
           ref=${ref}
+          data-id=${node.id}
           style=${{ left: node.x + 'px', top: node.y + 'px', '--node': `var(--branch-${colour})` }}
         >
           ${move && html`
@@ -1148,6 +1327,226 @@
             : html`<div class=${'sticky-text scroll' + (sticky.content ? '' : ' empty')} title="Double-click to edit · drag to move">${sticky.content || 'Double-click to write'}</div>`}
           <div class="sticky-bar" onPointerDown=${stop}>${bar}</div>
         </div>`;
+    }
+
+    // --- File bubbles -------------------------------------------------------
+
+    // The coloured type badge: PDF, IMG, DOC, or the ending of a text file.
+    function FileIcon({ name, big }) {
+      const kind = fileKind(name);
+      const label = kind === 'pdf' ? 'PDF' : kind === 'image' ? 'IMG' : kind === 'word' ? 'DOC' : kind === 'text' ? fileExt(name).toUpperCase() : 'FILE';
+      return html`<span class=${'file-icon k-' + kind + (big ? ' big' : '')} aria-hidden="true">${label}</span>`;
+    }
+
+    // A file's text is loaded on demand and kept for the rest of the session
+    // (a file's content never changes after upload).
+    const fileTextCache = new Map();
+    function loadFileText(id, limit) {
+      const key = id + ':' + limit;
+      if (!fileTextCache.has(key)) {
+        const request = api(`/api/files/${id}/text?limit=${limit}`);
+        request.catch(() => fileTextCache.delete(key)); // a failed load can be tried again
+        fileTextCache.set(key, request);
+      }
+      return fileTextCache.get(key);
+    }
+    function useFileText(id, limit, enabled) {
+      const [state, setState] = useState({ status: enabled ? 'loading' : 'idle', data: null, error: null });
+      const [attempt, setAttempt] = useState(0);
+      useEffect(() => {
+        if (!enabled) { setState({ status: 'idle', data: null, error: null }); return undefined; }
+        let current = true;
+        setState({ status: 'loading', data: null, error: null });
+        loadFileText(id, limit).then(
+          (data) => { if (current) setState({ status: 'ready', data, error: null }); },
+          (err) => { if (current) setState({ status: 'error', data: null, error: err.message }); });
+        return () => { current = false; };
+      }, [id, limit, enabled, attempt]);
+      return { ...state, retry: () => setAttempt((a) => a + 1) };
+    }
+
+    // An uploaded file on the canvas. Click to open it in the reader panel,
+    // drag to move. The bottom bar holds normal buttons and never starts a drag.
+    function FileBubble({ file, x, y, isDragging, isReading, onPath, save, removal, onHeight, onDragStart, onDragMove, onDragEnd, onAskDelete, onCancelDelete, onDelete, onRetrySave }) {
+      const ref = useRef(null);
+      const kind = fileKind(file.name);
+      const hasText = (kind === 'text' || kind === 'word') && file.status === 'ready';
+      const preview = useFileText(file.id, 280, hasText);
+      const [thumb, setThumb] = useState('loading'); // image thumbnail: loading | ready | failed
+
+      useLayoutEffect(() => {
+        const el = ref.current;
+        const report = () => onHeight(file.id, el.offsetHeight);
+        report();
+        const ro = new ResizeObserver(report);
+        ro.observe(el);
+        return () => ro.disconnect();
+      }, [file.id, onHeight]);
+
+      const stop = (e) => e.stopPropagation();
+      const inBar = (e) => e.target.closest('.filebub-bar');
+
+      let inner;
+      if (kind === 'image') {
+        inner = thumb === 'failed'
+          ? html`<div class="stack"><${FileIcon} name=${file.name} big=${true} /><span>Preview not available</span></div>`
+          : html`<img src=${`/api/files/${file.id}/content`} alt="" draggable=${false} loading="lazy" onLoad=${() => setThumb('ready')} onError=${() => setThumb('failed')} />`;
+      } else if (hasText && preview.status === 'loading') {
+        inner = html`<${Spinner} label="Loading preview…" />`;
+      } else if (hasText && preview.status === 'ready' && preview.data.text.trim()) {
+        inner = html`<div class="lines">${preview.data.text}</div>`;
+      } else {
+        inner = html`
+          <div class="stack">
+            <${FileIcon} name=${file.name} big=${true} />
+            ${file.status === 'error' && html`<span class="err">Text could not be read</span>`}
+            ${hasText && preview.status === 'ready' && html`<span>(empty)</span>`}
+            ${hasText && preview.status === 'error' && html`<span class="err">Preview failed</span>`}
+          </div>`;
+      }
+
+      let bar;
+      if (removal) {
+        bar = removal.busy
+          ? html`<${Spinner} label="Deleting…" />`
+          : html`
+              <span class=${'state' + (removal.error ? ' bad' : '')} title=${removal.error || ''}>${removal.error ? 'Could not delete.' : 'Delete this file?'}</span>
+              <button onClick=${() => onDelete(file.id)}>${removal.error ? 'Retry' : 'Delete'}</button>
+              <button onClick=${() => onCancelDelete(file.id)}>Cancel</button>`;
+      } else if (save && save.state === 'failed') {
+        bar = html`
+          <span class="state bad" title=${save.error}>Not saved</span>
+          <button onClick=${() => onRetrySave(file.id)}>Retry</button>
+          <button class="x" title="Delete this file" aria-label="Delete this file" onClick=${() => onAskDelete(file.id)}>×</button>`;
+      } else {
+        bar = html`
+          <span class="state">${save && save.state === 'saving' ? 'Saving…' : `${KIND_LABEL[kind]} · ${formatBytes(file.size)}`}</span>
+          <button class="x" title="Delete this file" aria-label="Delete this file" onClick=${() => onAskDelete(file.id)}>×</button>`;
+      }
+
+      return html`
+        <div
+          class=${'filebub' + (isDragging ? ' dragging' : '') + (isReading ? ' reading' : '') + (onPath ? ' onpath' : '') + (file.status === 'error' ? ' bad' : '')}
+          ref=${ref}
+          data-file=${file.id}
+          style=${{ left: x + 'px', top: y + 'px' }}
+          title=${file.status === 'error' && file.error ? file.error : 'Click to open · drag to move'}
+          onPointerDown=${(e) => { if (!inBar(e)) onDragStart(e, file); }}
+          onPointerMove=${onDragMove}
+          onPointerUp=${onDragEnd}
+          onPointerCancel=${onDragEnd}
+        >
+          <div class="filebub-head">
+            <${FileIcon} name=${file.name} />
+            <span class="filebub-name" title=${file.name}>${file.name}</span>
+          </div>
+          <div class="filebub-preview">${inner}</div>
+          <div class="filebub-bar" onPointerDown=${stop}>${bar}</div>
+        </div>`;
+    }
+
+    // A file on its way to the server: progress bar with percentage, then
+    // "Processing…", or the error with Retry where a retry can help.
+    function UploadBubble({ upload, x, y, onRetry, onDismiss }) {
+      const percent = Math.round(upload.progress * 100);
+      let inner;
+      let bar;
+      if (upload.state === 'failed') {
+        inner = html`<div class="stack"><span class="err">${upload.error}</span></div>`;
+        bar = html`
+          <span class="state bad">Not uploaded</span>
+          ${upload.canRetry && html`<button class="primary" onClick=${() => onRetry(upload.key)}>Retry</button>`}
+          <button onClick=${() => onDismiss(upload.key)}>Dismiss</button>`;
+      } else if (upload.state === 'processing') {
+        inner = html`<div class="stack"><div class="progress"><i style=${{ width: '100%' }}></i></div><${Spinner} label="Processing…" since=${upload.since} /></div>`;
+        bar = html`<span class="state">Uploaded, saving…</span>`;
+      } else {
+        inner = html`
+          <div class="stack">
+            <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow=${percent}><i style=${{ width: percent + '%' }}></i></div>
+            <span class="percent">Uploading… ${percent}%</span>
+          </div>`;
+        bar = html`
+          <span class="state">${formatBytes(upload.size)}</span>
+          <button onClick=${() => onDismiss(upload.key)}>Cancel</button>`;
+      }
+      const stop = (e) => e.stopPropagation();
+      return html`
+        <div class=${'filebub uploading onpath' + (upload.state === 'failed' ? ' bad' : '')} style=${{ left: x + 'px', top: y + 'px' }} onPointerDown=${stop}>
+          <div class="filebub-head">
+            <${FileIcon} name=${upload.name} />
+            <span class="filebub-name" title=${upload.name}>${upload.name}</span>
+          </div>
+          <div class="filebub-preview">${inner}</div>
+          <div class="filebub-bar">${bar}</div>
+        </div>`;
+    }
+
+    // A file open in the reader panel: images are shown, PDFs sit in the
+    // browser's own viewer, text and Word files are shown as text.
+    function FileViewer({ file, onClose }) {
+      const kind = fileKind(file.name);
+      const url = `/api/files/${file.id}/content`;
+      const hasText = (kind === 'text' || kind === 'word') && file.status === 'ready';
+      const text = useFileText(file.id, FILE_TEXT_LIMIT, hasText);
+      const [image, setImage] = useState({ state: 'loading', attempt: 0 });
+      useEffect(() => { setImage({ state: 'loading', attempt: 0 }); }, [file.id]);
+      const isMarkdown = fileExt(file.name) === 'md';
+      const mdHtml = useMemo(() => (isMarkdown && text.status === 'ready' ? renderMarkdown(text.data.text) : ''), [isMarkdown, text.status, text.data]);
+
+      let body;
+      let flush = false;
+      if (kind === 'pdf') {
+        flush = true;
+        body = html`
+          <iframe class="file-frame" src=${url} title=${file.name}></iframe>
+          <div class="file-foot">If the PDF does not show here, <a href=${url} target="_blank" rel="noopener noreferrer">open it in a new tab</a>.</div>`;
+      } else if (kind === 'image') {
+        body = html`
+          ${image.state === 'loading' && html`<div class="reader-foot"><${Spinner} label="Loading image…" /></div>`}
+          ${image.state === 'failed'
+            ? html`<div class="reader-error">The image could not be loaded.</div>
+                   <div class="reader-foot"><button class="primary" onClick=${() => setImage((i) => ({ state: 'loading', attempt: i.attempt + 1 }))}>Retry</button></div>`
+            : html`<img
+                key=${image.attempt}
+                class="file-image"
+                src=${image.attempt ? `${url}?retry=${image.attempt}` : url}
+                alt=${file.name}
+                style=${{ display: image.state === 'ready' ? 'block' : 'none' }}
+                onLoad=${() => setImage((i) => ({ ...i, state: 'ready' }))}
+                onError=${() => setImage((i) => ({ ...i, state: 'failed' }))}
+              />`}`;
+      } else if (file.status === 'error') {
+        body = html`<div class="reader-error">${file.error || 'This file could not be read.'}</div>`;
+      } else if (text.status === 'loading' || text.status === 'idle') {
+        body = html`<div class="reader-foot"><${Spinner} label="Loading text…" /></div>`;
+      } else if (text.status === 'error') {
+        body = html`
+          <div class="reader-error">Could not load the text: ${text.error}</div>
+          <div class="reader-foot"><button class="primary" onClick=${text.retry}>Retry</button></div>`;
+      } else {
+        const note = text.data.truncated
+          ? html`<p class="file-note">Showing the first ${text.data.text.length.toLocaleString('en-GB')} of ${text.data.total.toLocaleString('en-GB')} characters. Download the file to see all of it.</p>`
+          : kind === 'word' ? html`<p class="file-note">Text taken from the Word file, without its formatting.</p>` : null;
+        const content = !text.data.text.trim()
+          ? html`<div class="ctx-empty">This file has no text.</div>`
+          : isMarkdown
+            ? html`<div class="reader-reply md" onClick=${onMarkdownClick} dangerouslySetInnerHTML=${{ __html: mdHtml }}></div>`
+            : html`<div class=${'file-text' + (kind === 'word' ? ' prose' : '')}>${text.data.text}</div>`;
+        body = html`${note}${content}`;
+      }
+
+      return html`
+        <aside class="reader file" aria-label="File in the reader panel">
+          <div class="reader-bar">
+            <${FileIcon} name=${file.name} />
+            <span class="file-title" title=${file.name}>${file.name}</span>
+            <span class="spacer"></span>
+            <a class="btn" href=${url + '?download=1'} download=${file.name} title=${`Download ${file.name} (${formatBytes(file.size)})`}>Download</a>
+            <button class="close" onClick=${onClose} aria-label="Close reader" title="Close (Esc)">×</button>
+          </div>
+          <div class=${'reader-scroll scroll' + (flush ? ' flush' : '')}>${body}</div>
+        </aside>`;
     }
 
     // Copy text to the clipboard; falls back to the old selection trick where
@@ -1665,7 +2064,7 @@
     function App() {
       const [list, setList] = useState({ status: 'loading', items: [], error: null });
       const [canvasId, setCanvasId] = useState(() => location.hash.slice(1) || null);
-      const [doc, setDoc] = useState({ status: 'idle', canvas: null, nodes: [], stickies: [], error: null });
+      const [doc, setDoc] = useState({ status: 'idle', canvas: null, nodes: [], stickies: [], files: [], error: null });
       const [view, setView] = useState({ x: 0, y: 0, k: 1 });
       const [heights, setHeights] = useState({});
       const [creating, setCreating] = useState({ busy: false, error: null, title: null });
@@ -1692,6 +2091,11 @@
       const [removals, setRemovals] = useState({});               // sticky id -> { busy, error } while its delete confirm is open
       const [stickyAdd, setStickyAdd] = useState({ busy: false, error: null, node: null });
       const [streamTick, setStreamTick] = useState(0);  // bumped when a node drops from streaming to polling
+      const [fileReaderId, setFileReaderId] = useState(null);     // file shown in the reader panel
+      const [uploads, setUploads] = useState([]);                 // files on their way to the server
+      const [fileSaves, setFileSaves] = useState({});             // file id -> { state: saving|failed, error, patch }
+      const [draggingFile, setDraggingFile] = useState(null);
+      const [dropping, setDropping] = useState(null);             // null, or { nodeId } while files are dragged over the canvas
 
       const viewportRef = useRef(null);
       const loadSeq = useRef(0);
@@ -1709,7 +2113,10 @@
       const animFrame = useRef(null);
       const animTimer = useRef(null);
       const readerOpenRef = useRef(false);
-      readerOpenRef.current = readerId !== null || contextOpen;
+      readerOpenRef.current = readerId !== null || contextOpen || fileReaderId !== null;
+      const fileInputRef = useRef(null);
+      const uploadSeq = useRef(0);
+      const uploadRequests = useRef(new Map()); // upload key -> XMLHttpRequest in flight
       const nodesRef = useRef(doc.nodes);
       nodesRef.current = doc.nodes;
 
@@ -1751,7 +2158,7 @@
 
       const loadCanvas = useCallback(async (id) => {
         const seq = ++loadSeq.current;
-        setDoc({ status: 'loading', canvas: null, nodes: [], stickies: [], error: null });
+        setDoc({ status: 'loading', canvas: null, nodes: [], stickies: [], files: [], error: null });
         setHeights({});
         setComposer(null);
         setRetries({});
@@ -1763,6 +2170,13 @@
         // Send any sticky text still waiting for its autosave before leaving this canvas.
         if (flushStickiesRef.current) flushStickiesRef.current();
         setReaderId(null);
+        setFileReaderId(null);
+        setFileSaves({});
+        setDropping(null);
+        // Uploads still running belong to the canvas being left: stop them.
+        for (const request of uploadRequests.current.values()) request.abort();
+        uploadRequests.current.clear();
+        setUploads([]);
         setSelectedId(null);
         setStickyHeights({});
         setEditingSticky(null);
@@ -1777,10 +2191,10 @@
           if (seq !== loadSeq.current) return; // a newer load has started
           fitWhenMeasured.current = true;
           setCollapsed(loadCollapsed(id));
-          setDoc({ status: 'ready', canvas: data.canvas, nodes: data.nodes, stickies: data.stickies || [], error: null });
+          setDoc({ status: 'ready', canvas: data.canvas, nodes: data.nodes, stickies: data.stickies || [], files: data.files || [], error: null });
         } catch (err) {
           if (seq !== loadSeq.current) return;
-          setDoc({ status: 'error', canvas: null, nodes: [], stickies: [], error: err.message });
+          setDoc({ status: 'error', canvas: null, nodes: [], stickies: [], files: [], error: err.message });
         }
       }, []);
 
@@ -1790,7 +2204,7 @@
         if (list.status !== 'ready') return;
         if (!canvasId) {
           loadSeq.current++;
-          setDoc({ status: 'idle', canvas: null, nodes: [], stickies: [], error: null });
+          setDoc({ status: 'idle', canvas: null, nodes: [], stickies: [], files: [], error: null });
           setComposer(null);
           return;
         }
@@ -1822,8 +2236,11 @@
         const stickyRects = doc.stickies
           .filter((st) => !(st.node_id && hidden.has(st.node_id)))
           .map((st) => ({ ...stickyPosition(st, byId), w: STICKY_W, h: stickyHeights[st.id] || 120 }));
-        setView(fitView(shown, heights, rect.width, rect.height, stickyRects));
-      }, [doc.nodes, doc.stickies, heights, stickyHeights, collapsed]);
+        const fileRects = doc.files
+          .filter((f) => !(f.node_id && hidden.has(f.node_id)))
+          .map((f) => ({ ...stickyPosition(f, byId), w: FILE_W, h: stickyHeights[f.id] || FILE_H }));
+        setView(fitView(shown, heights, rect.width, rect.height, [...stickyRects, ...fileRects]));
+      }, [doc.nodes, doc.stickies, doc.files, heights, stickyHeights, collapsed]);
 
       // Fit once after a canvas loads, as soon as every card has been measured.
       useEffect(() => {
@@ -1979,7 +2396,7 @@
       const drag = useRef(null);
       const onPointerDown = (e) => {
         if (e.button !== 0 && e.button !== 1) return;
-        if (e.target.closest('.card, .sticky, .notice, .composer, .reader, .minimap, .toast')) return;
+        if (e.target.closest('.card, .sticky, .filebub, .notice, .composer, .reader, .minimap, .toast')) return;
         try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
         drag.current = { id: e.pointerId, startX: e.clientX, startY: e.clientY, lastX: e.clientX, lastY: e.clientY, moved: false };
       };
@@ -2062,11 +2479,18 @@
 
       const onExpand = (node) => {
         setContextOpen(false);
+        setFileReaderId(null);
         setReaderId((current) => (current === node.id ? null : node.id));
       };
       const toggleContext = () => {
         setReaderId(null);
+        setFileReaderId(null);
         setContextOpen((open) => !open);
+      };
+      const openFile = (id) => {
+        setReaderId(null);
+        setContextOpen(false);
+        setFileReaderId((current) => (current === id ? null : id));
       };
       // Continue and Branch from the reader do exactly what the card's buttons do.
       // On a narrow window the panel would cover the composer, so it closes first.
@@ -2080,13 +2504,13 @@
 
       // Esc closes the reader, unless something else (the composer) already used the key.
       useEffect(() => {
-        if (readerId === null && !contextOpen) return;
+        if (readerId === null && !contextOpen && fileReaderId === null) return;
         const onKey = (e) => {
-          if (e.key === 'Escape' && !e.defaultPrevented) { setReaderId(null); setContextOpen(false); }
+          if (e.key === 'Escape' && !e.defaultPrevented) { setReaderId(null); setContextOpen(false); setFileReaderId(null); }
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
-      }, [readerId, contextOpen]);
+      }, [readerId, contextOpen, fileReaderId]);
 
       // An empty canvas always shows the composer, centred.
       useEffect(() => {
@@ -2358,7 +2782,10 @@
         const stickyRects = doc.stickies
           .filter((st) => !(st.node_id && hidden.has(st.node_id)))
           .map((st) => ({ ...stickyPosition(st, movedById), w: STICKY_W, h: stickyHeights[st.id] || 120 }));
-        return fitView(moved.filter((n) => !hidden.has(n.id)), heights, rect.width, rect.height, stickyRects);
+        const fileRects = doc.files
+          .filter((f) => !(f.node_id && hidden.has(f.node_id)))
+          .map((f) => ({ ...stickyPosition(f, movedById), w: FILE_W, h: stickyHeights[f.id] || FILE_H }));
+        return fitView(moved.filter((n) => !hidden.has(n.id)), heights, rect.width, rect.height, [...stickyRects, ...fileRects]);
       };
 
       // Save a whole layout in one request. job = { kind: 'tidy' | 'undo', canvasId, positions, prev, prevView }.
@@ -2594,6 +3021,233 @@
         if (d.moved) saveSticky(d.id, { x: d.x, y: d.y });
       };
 
+      // -- File bubbles -------------------------------------------------------
+
+      const updateFile = (id, patch) => {
+        setDoc((d) => ({ ...d, files: d.files.map((f) => (f.id === id ? { ...f, ...patch } : f)) }));
+      };
+      // The switcher shows each canvas's stored size; keep it in step.
+      const bumpStoredBytes = (canvasId, delta) => {
+        setList((l) => ({ ...l, items: l.items.map((c) => (c.id === canvasId ? { ...c, file_bytes: Math.max(0, (c.file_bytes || 0) + delta) } : c)) }));
+      };
+
+      // Saving a change to a file (its position). The latest change wins.
+      const fileSaveSeq = useRef({});
+      const saveFile = async (id, patch) => {
+        const seq = (fileSaveSeq.current[id] || 0) + 1;
+        fileSaveSeq.current[id] = seq;
+        setFileSaves((m) => ({ ...m, [id]: { state: 'saving', error: null, patch } }));
+        try {
+          await api('/api/files/' + id, { method: 'PATCH', body: JSON.stringify(patch) });
+          if (fileSaveSeq.current[id] !== seq) return;
+          setFileSaves((m) => { const { [id]: _, ...rest } = m; return rest; });
+        } catch (err) {
+          if (fileSaveSeq.current[id] !== seq) return;
+          setFileSaves((m) => ({ ...m, [id]: { state: 'failed', error: err.message, patch } }));
+        }
+      };
+      const retryFileSave = (id) => { if (fileSaves[id]) saveFile(id, fileSaves[id].patch); };
+
+      // Uploading. Each file is its own request, so each has its own progress.
+      const patchUpload = (key, patch) => setUploads((list) => list.map((u) => (u.key === key ? { ...u, ...patch } : u)));
+      const sendUpload = (upload) => {
+        const form = new FormData();
+        form.append('name', upload.name);
+        form.append('x', String(upload.x));
+        form.append('y', String(upload.y));
+        if (upload.nodeId) form.append('node_id', upload.nodeId);
+        form.append('file', upload.file, upload.name);
+
+        const request = new XMLHttpRequest();
+        uploadRequests.current.set(upload.key, request);
+        const mine = () => uploadRequests.current.get(upload.key) === request;
+        const fail = (message, canRetry) => {
+          if (!mine()) return;
+          uploadRequests.current.delete(upload.key);
+          patchUpload(upload.key, { state: 'failed', error: message, canRetry });
+        };
+        request.upload.onprogress = (e) => { if (e.lengthComputable && mine()) patchUpload(upload.key, { progress: e.loaded / e.total }); };
+        request.upload.onload = () => { if (mine()) patchUpload(upload.key, { state: 'processing', progress: 1, since: Date.now() }); };
+        request.onload = () => {
+          let data = null;
+          try { data = JSON.parse(request.responseText); } catch { /* not JSON */ }
+          if (request.status >= 200 && request.status < 300 && data && data.id) {
+            if (!mine()) return;
+            uploadRequests.current.delete(upload.key);
+            setUploads((list) => list.filter((u) => u.key !== upload.key));
+            setDoc((d) => (d.canvas && d.canvas.id === upload.canvasId ? { ...d, files: [...d.files, data] } : d));
+            bumpStoredBytes(upload.canvasId, data.size);
+          } else {
+            // A refused file (too large, wrong type) will be refused again; anything else can be retried.
+            const refused = request.status === 413 || request.status === 415;
+            fail((data && data.error) || (request.status === 413 ? 'File too large (max 10 MB).' : `Upload failed (${request.status}).`), !refused);
+          }
+        };
+        request.onerror = () => fail('Network error. Check your connection and try again.', true);
+        request.open('POST', `/api/canvases/${upload.canvasId}/files`);
+        request.send(form);
+      };
+      const retryUpload = (key) => {
+        const upload = uploads.find((u) => u.key === key);
+        if (!upload) return;
+        patchUpload(key, { state: 'uploading', progress: 0, error: null });
+        sendUpload(upload);
+      };
+      const dismissUpload = (key) => {
+        const request = uploadRequests.current.get(key);
+        uploadRequests.current.delete(key);
+        if (request) request.abort();
+        setUploads((list) => list.filter((u) => u.key !== key));
+      };
+
+      // Add files to the canvas. place = { nodeId } attaches them to that card
+      // and puts them beside it; { x, y } is a canvas point (a drop); nothing
+      // means the centre of the screen (the "+ File" button).
+      const addFiles = (files, place) => {
+        if (!doc.canvas || files.length === 0) return;
+        const canvasId = doc.canvas.id;
+        const node = place && place.nodeId ? doc.nodes.find((n) => n.id === place.nodeId) : null;
+        let base;
+        if (node) {
+          // Beside the card, past any stickies attached there, below files already attached.
+          const taken = doc.files.filter((f) => f.node_id === node.id).length + uploads.filter((u) => u.nodeId === node.id).length;
+          const hasStickies = doc.stickies.some((st) => st.node_id === node.id);
+          const y = 8 + taken * (FILE_H + 12);
+          const right = { x: CARD_W + 24 + (hasStickies ? STICKY_W + 16 : 0), y };
+          const left = { x: -FILE_W - 24 - (hasStickies ? STICKY_W + 16 : 0), y };
+          const blocked = (o) => doc.nodes.some((n) => n.id !== node.id && rectsOverlap(
+            { x: node.x + o.x, y: node.y + o.y, w: FILE_W, h: FILE_H },
+            { x: n.x, y: n.y, w: CARD_W, h: heights[n.id] || 200 }));
+          base = blocked(right) && !blocked(left) ? left : right;
+        } else if (place && place.x !== undefined) {
+          base = { x: Math.round(place.x - FILE_W / 2), y: Math.round(place.y - 24) };
+        } else {
+          const rect = viewportRef.current.getBoundingClientRect();
+          const v = viewRef.current;
+          base = { x: Math.round((rect.width / 2 - v.x) / v.k - FILE_W / 2), y: Math.round((rect.height / 2 - v.y) / v.k - FILE_H / 2) };
+          // Do not land exactly on top of a free file that is already there.
+          while (doc.files.some((f) => !f.node_id && Math.abs(f.x - base.x) < 12 && Math.abs(f.y - base.y) < 12)) {
+            base = { x: base.x + 24, y: base.y + 24 };
+          }
+        }
+        const fresh = files.map((file, i) => {
+          const pos = node
+            ? { x: base.x, y: base.y + i * (FILE_H + 12) }
+            : { x: base.x + (i % 3) * (FILE_W + 16), y: base.y + Math.floor(i / 3) * (FILE_H + 16) };
+          const upload = {
+            key: ++uploadSeq.current, file, name: file.name, size: file.size, canvasId,
+            nodeId: node ? node.id : null, x: pos.x, y: pos.y,
+            progress: 0, state: 'uploading', error: null, canRetry: true,
+          };
+          // Refuse at once what the server would refuse anyway.
+          const ext = fileExt(file.name);
+          let refusal = null;
+          if (fileKind(file.name) === 'other') refusal = `This file type is not supported${ext ? ` (.${ext})` : ''}. Accepted: ${ACCEPTED_LABEL}.`;
+          else if (file.size > MAX_FILE_BYTES) refusal = `File too large (max 10 MB). This one is ${formatBytes(file.size)}.`;
+          else if (file.size === 0) refusal = 'The file is empty.';
+          return refusal ? { ...upload, state: 'failed', error: refusal, canRetry: false } : upload;
+        });
+        setUploads((list) => [...list, ...fresh]);
+        for (const upload of fresh) if (upload.state === 'uploading') sendUpload(upload);
+      };
+
+      // Dragging files in from the computer. The card under the pointer lights
+      // up as the drop target before release.
+      const carriesFiles = (e) => !!e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+      const onFileDragOver = (e) => {
+        if (!carriesFiles(e) || doc.status !== 'ready') return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        const card = e.target.closest ? e.target.closest('.card') : null;
+        const nodeId = card ? card.dataset.id : null;
+        setDropping((prev) => (prev && prev.nodeId === nodeId ? prev : { nodeId }));
+      };
+      const onFileDragLeave = (e) => {
+        if (!e.currentTarget.contains(e.relatedTarget)) setDropping(null);
+      };
+      const onFileDrop = (e) => {
+        if (!carriesFiles(e)) return;
+        e.preventDefault();
+        setDropping(null);
+        if (doc.status !== 'ready') return;
+        const files = Array.from(e.dataTransfer.files || []);
+        const card = e.target.closest ? e.target.closest('.card') : null;
+        if (card && card.dataset.id) return addFiles(files, { nodeId: card.dataset.id });
+        // Dropped on a panel: there is no canvas point under it, so use the centre.
+        if (e.target.closest && e.target.closest('.reader, .composer, .minimap')) return addFiles(files, null);
+        const rect = viewportRef.current.getBoundingClientRect();
+        const v = viewRef.current;
+        addFiles(files, { x: (e.clientX - rect.left - v.x) / v.k, y: (e.clientY - rect.top - v.y) / v.k });
+      };
+      // A file dropped anywhere else on the page must not make the browser open it.
+      useEffect(() => {
+        const guard = (e) => {
+          if (e.defaultPrevented || !e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'none';
+        };
+        const clear = () => setDropping(null);
+        window.addEventListener('dragover', guard);
+        window.addEventListener('drop', guard);
+        window.addEventListener('dragend', clear);
+        return () => {
+          window.removeEventListener('dragover', guard);
+          window.removeEventListener('drop', guard);
+          window.removeEventListener('dragend', clear);
+        };
+      }, []);
+
+      // Deleting, with a small confirm inside the bubble (shares the stickies' confirm state).
+      const deleteFile = async (id) => {
+        const file = doc.files.find((f) => f.id === id);
+        setRemovals((m) => ({ ...m, [id]: { busy: true, error: null } }));
+        try {
+          await api('/api/files/' + id, { method: 'DELETE' });
+          setDoc((d) => ({ ...d, files: d.files.filter((f) => f.id !== id) }));
+          setFileReaderId((current) => (current === id ? null : current));
+          setFileSaves((m) => { const { [id]: _, ...rest } = m; return rest; });
+          cancelDeleteSticky(id);
+          if (file) bumpStoredBytes(file.canvas_id, -file.size);
+        } catch (err) {
+          setRemovals((m) => ({ ...m, [id]: { busy: false, error: err.message } }));
+        }
+      };
+
+      // Dragging: like stickies, the stored x and y move by the drag distance,
+      // which works for free files (canvas position) and attached ones (offset).
+      // A press that does not move is a click and opens the file.
+      const fileDrag = useRef(null);
+      const onFileDragStart = (e, file) => {
+        if (e.button !== 0) return;
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+        fileDrag.current = {
+          id: file.id, pointerId: e.pointerId,
+          startX: e.clientX, startY: e.clientY,
+          origX: file.x, origY: file.y, x: file.x, y: file.y,
+          moved: false,
+        };
+      };
+      const onFileDragMove = (e) => {
+        const d = fileDrag.current;
+        if (!d || d.pointerId !== e.pointerId) return;
+        const dx = e.clientX - d.startX;
+        const dy = e.clientY - d.startY;
+        if (!d.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+        if (!d.moved) { d.moved = true; setDraggingFile(d.id); }
+        const k = viewRef.current.k;
+        d.x = Math.round(d.origX + dx / k);
+        d.y = Math.round(d.origY + dy / k);
+        updateFile(d.id, { x: d.x, y: d.y });
+      };
+      const onFileDragEnd = (e) => {
+        const d = fileDrag.current;
+        if (!d || d.pointerId !== e.pointerId) return;
+        fileDrag.current = null;
+        setDraggingFile(null);
+        if (d.moved) saveFile(d.id, { x: d.x, y: d.y });
+        else if (e.type === 'pointerup') openFile(d.id);
+      };
+
       // -- Render ------------------------------------------------------------
 
       const byId = new Map(doc.nodes.map((n) => [n.id, n]));
@@ -2628,11 +3282,34 @@
         .filter((st) => !(st.node_id && hidden.has(st.node_id)))
         .map((st) => ({ st, ...stickyPosition(st, byId) }));
 
+      // Files, and files still uploading, are placed the same way as stickies.
+      const placedFiles = doc.files
+        .filter((f) => !(f.node_id && hidden.has(f.node_id)))
+        .map((f) => ({ f, ...stickyPosition(f, byId) }));
+      const placedUploads = uploads
+        .filter((u) => doc.canvas && u.canvasId === doc.canvas.id && !(u.nodeId && hidden.has(u.nodeId)))
+        .map((u) => ({ u, ...stickyPosition({ node_id: u.nodeId, x: u.x, y: u.y }, byId) }));
+      const readerFile = fileReaderId ? doc.files.find((f) => f.id === fileReaderId) : null;
+      const storedBytes = doc.files.reduce((sum, f) => sum + f.size, 0);
+      const dropNode = dropping && dropping.nodeId ? byId.get(dropping.nodeId) : null;
+
       // Minimap blocks: every card on show in its branch colour, plus stickies.
       const miniBlocks = [
         ...visibleNodes.map((n) => ({ key: n.id, x: n.x, y: n.y, w: CARD_W, h: heights[n.id] || 200, fill: `var(--branch-${colours.get(n.id)})`, opacity: 0.9 })),
         ...placedStickies.map(({ st, x, y }) => ({ key: st.id, x, y, w: STICKY_W, h: stickyHeights[st.id] || 120, fill: STICKY_LINE[st.color] || STICKY_LINE.yellow, opacity: 0.75 })),
+        ...placedFiles.map(({ f, x, y }) => ({ key: f.id, x, y, w: FILE_W, h: stickyHeights[f.id] || FILE_H, fill: 'var(--muted)', opacity: 0.75 })),
       ];
+      // Attached files: the same short dashed connector as attached stickies.
+      for (const { f, x, y } of placedFiles) {
+        const node = f.node_id ? byId.get(f.node_id) : null;
+        if (!node || heights[node.id] === undefined) continue;
+        const cardRect = { x: node.x, y: node.y, w: CARD_W, h: heights[node.id] };
+        const fileRect = { x, y, w: FILE_W, h: stickyHeights[f.id] || FILE_H };
+        if (rectsOverlap(cardRect, fileRect)) continue;
+        const a = borderPoint(cardRect, fileRect.x + fileRect.w / 2, fileRect.y + fileRect.h / 2);
+        const b = borderPoint(fileRect, cardRect.x + cardRect.w / 2, cardRect.y + cardRect.h / 2);
+        edges.push(html`<line key=${'tether-' + f.id} class=${'tether' + (activePath.has(node.id) ? ' onpath' : '')} style=${{ stroke: 'var(--muted)' }} x1=${a.x} y1=${a.y} x2=${b.x} y2=${b.y} />`);
+      }
       for (const { st, x, y } of placedStickies) {
         const node = st.node_id ? byId.get(st.node_id) : null;
         if (!node || heights[node.id] === undefined) continue;
@@ -2692,11 +3369,20 @@
             onChange=${(e) => setCanvasId(e.target.value)}
           >
             ${list.items.length === 0 && html`<option value="">No canvases</option>`}
-            ${list.items.map((c) => html`<option key=${c.id} value=${c.id}>${c.title}</option>`)}
+            ${list.items.map((c) => html`<option key=${c.id} value=${c.id}>${c.title}${c.file_bytes > 0 ? ` · ${formatBytes(c.file_bytes)}` : ''}</option>`)}
           </select>
           <button onClick=${onNewCanvas} disabled=${creating.busy || list.status !== 'ready'}>New canvas</button>
           <button onClick=${onNewConversation} disabled=${!ready || isEmpty || (composer && composer.busy)}>New conversation</button>
           <button onClick=${() => addSticky(null)} disabled=${!ready || stickyAdd.busy} title="Add a free sticky note at the centre of the screen">+ Sticky</button>
+          <button onClick=${() => fileInputRef.current.click()} disabled=${!ready} title=${`Add files to this canvas: ${ACCEPTED_LABEL}, up to 10 MB each. You can also drag files onto the canvas or onto a card.`}>+ File</button>
+          <input
+            ref=${fileInputRef}
+            type="file"
+            multiple
+            accept=${FILE_ACCEPT}
+            style=${{ display: 'none' }}
+            onChange=${(e) => { addFiles(Array.from(e.target.files || []), null); e.target.value = ''; }}
+          />
           <button onClick=${runTidy} disabled=${!ready || doc.nodes.length === 0 || tidyBusy} title="Rearrange every card into a clean tree and save the positions">Tidy</button>
           <button
             class=${contextOpen ? 'on' : ''}
@@ -2719,7 +3405,11 @@
           ${ready && html`
             <span class="title">
               ${doc.canvas.title}
-              <small>${doc.nodes.length} ${doc.nodes.length === 1 ? 'node' : 'nodes'}</small>
+              <small>${doc.nodes.length} ${doc.nodes.length === 1 ? 'node' : 'nodes'}${doc.files.length > 0 ? ` · ${doc.files.length} ${doc.files.length === 1 ? 'file' : 'files'}, ${formatBytes(storedBytes)}` : ''}</small>
+            </span>`}
+          ${ready && storedBytes > STORAGE_WARN_BYTES && html`
+            <span class="inline-status bad" role="alert" title="Files are stored in the database. Delete files you no longer need to keep it small.">
+              <span class="clip">Files on this canvas use ${formatBytes(storedBytes)} (over 200 MB)</span>
             </span>`}
           <span class="spacer"></span>
           <button
@@ -2738,13 +3428,16 @@
                 </svg>`}
           </button>
           <span class="zoom" title="Zoom level">${Math.round(view.k * 100)}%</span>
-          <button onClick=${fit} disabled=${!ready || doc.nodes.length === 0}>Fit to screen</button>
+          <button onClick=${fit} disabled=${!ready || (doc.nodes.length === 0 && doc.stickies.length === 0 && doc.files.length === 0)}>Fit to screen</button>
         </div>
 
         <div
-          class=${'viewport' + (panning ? ' panning' : '') + (readerNode || contextOpen ? ' reader-open' : '')}
+          class=${'viewport' + (panning ? ' panning' : '') + (readerNode || contextOpen || readerFile ? ' reader-open' : '') + (dropping ? ' dropping' : '')}
           ref=${viewportRef}
           style=${viewportStyle}
+          onDragOver=${onFileDragOver}
+          onDragLeave=${onFileDragLeave}
+          onDrop=${onFileDrop}
           onPointerDown=${onPointerDown}
           onPointerMove=${onPointerMove}
           onPointerUp=${onPointerUp}
@@ -2766,6 +3459,7 @@
                 onExpand=${onExpand}
                 onAddSticky=${addSticky}
                 isTarget=${!!composer && composer.parentId === n.id}
+                isDrop=${!!dropping && dropping.nodeId === n.id}
                 pendingSince=${n.status === 'pending' ? (pendingSince.current[n.id] || Date.parse(n.updated_at)) : null}
                 pollError=${pollErrors[n.id]}
                 retry=${retries[n.id]}
@@ -2805,10 +3499,34 @@
                 onRetrySave=${retryStickySave}
                 onPin=${onStickyPin}
               />`)}
+            ${placedFiles.map(({ f, x, y }) => html`
+              <${FileBubble}
+                key=${f.id}
+                file=${f}
+                x=${x}
+                y=${y}
+                isDragging=${draggingFile === f.id}
+                isReading=${fileReaderId === f.id}
+                onPath=${!!f.node_id && activePath.has(f.node_id)}
+                save=${fileSaves[f.id]}
+                removal=${removals[f.id]}
+                onHeight=${onStickyHeight}
+                onDragStart=${onFileDragStart}
+                onDragMove=${onFileDragMove}
+                onDragEnd=${onFileDragEnd}
+                onAskDelete=${askDeleteSticky}
+                onCancelDelete=${cancelDeleteSticky}
+                onDelete=${deleteFile}
+                onRetrySave=${retryFileSave}
+              />`)}
+            ${placedUploads.map(({ u, x, y }) => html`
+              <${UploadBubble} key=${'upload-' + u.key} upload=${u} x=${x} y=${y} onRetry=${retryUpload} onDismiss=${dismissUpload} />`)}
             ${showGhost && html`<div class="ghost" style=${{ left: composer.x + 'px', top: composer.y + 'px' }}>New node</div>`}
           </div>
           ${overlay && html`<div class="overlay">${overlay}</div>`}
           ${ready && toast}
+          ${ready && dropping && html`
+            <div class="drop-hint">${dropNode ? `Drop to attach to “${snippet(dropNode.prompt, 40)}”` : 'Drop to add files here'}</div>`}
           ${ready && miniBlocks.length > 0 && vpSize.w > 0 && html`
             <${Minimap} blocks=${miniBlocks} view=${view} size=${vpSize} onMove=${centreOn} />`}
           ${ready && composer && html`
@@ -2834,6 +3552,8 @@
               }}
               onClose=${() => setContextOpen(false)}
             />`}
+          ${ready && readerFile && html`
+            <${FileViewer} key=${readerFile.id} file=${readerFile} onClose=${() => setFileReaderId(null)} />`}
           ${ready && readerNode && html`
             <${Reader}
               node=${readerNode}

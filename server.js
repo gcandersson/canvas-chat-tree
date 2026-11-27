@@ -3,6 +3,8 @@
 const crypto = require('node:crypto');
 const path = require('node:path');
 const express = require('express');
+const multer = require('multer');
+const mammoth = require('mammoth');
 const { Pool } = require('pg');
 const { Anthropic } = require('@anthropic-ai/sdk');
 
@@ -18,6 +20,29 @@ const MAX_BATCH_POSITIONS = 5000;
 const MAX_INSTRUCTIONS_CHARS = 20000;
 const PINNED_NOTES_CAP = 8000; // total characters of pinned-note text sent to the AI
 const STICKY_COLORS = ['yellow', 'green', 'blue', 'pink', 'purple'];
+const MAX_FILE_BYTES = 10 * 1024 * 1024; // hard limit per uploaded file
+const MAX_FILE_NAME_CHARS = 200;
+const MAX_FILE_TEXT_RESPONSE = 200000;   // most characters of extracted text sent to the page at once
+const CONTEXT_MODES = ['off', 'branch', 'canvas'];
+// Accepted uploads, by file extension. The stored MIME type always comes from
+// this table, never from what the browser claims. kind decides how the bytes
+// are checked and whether text is extracted.
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+const FILE_TYPES = {
+  pdf: { mime: 'application/pdf', kind: 'pdf' },
+  png: { mime: 'image/png', kind: 'image' },
+  jpg: { mime: 'image/jpeg', kind: 'image' },
+  jpeg: { mime: 'image/jpeg', kind: 'image' },
+  webp: { mime: 'image/webp', kind: 'image' },
+  gif: { mime: 'image/gif', kind: 'image' },
+  txt: { mime: 'text/plain', kind: 'text' },
+  md: { mime: 'text/markdown', kind: 'text' },
+  csv: { mime: 'text/csv', kind: 'text' },
+  docx: { mime: DOCX_MIME, kind: 'word' },
+};
+const ACCEPTED_LABEL = 'PDF, PNG, JPG, WEBP, GIF, TXT, MD, CSV and DOCX';
+// Only these are ever shown inline by the browser; everything else downloads.
+const INLINE_MIMES = new Set(['application/pdf', 'image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 const SYSTEM_PROMPT =
   'The user is exploring ideas on a branching canvas, where each exchange is a node and any node ' +
   'can be branched in a new direction. You see only the path of exchanges leading to the current ' +
@@ -83,6 +108,31 @@ const SCHEMA_SQL = `
 
   -- Canvas instructions: free text sent to the AI for every node on the canvas.
   ALTER TABLE canvases ADD COLUMN IF NOT EXISTS instructions text NULL;
+
+  -- Uploaded files, shown as file bubbles. The bytes live in data. Position
+  -- works like stickies: node_id null = canvas coordinates, node_id set =
+  -- offset from that node's top-left corner. text_content holds the text of
+  -- txt, md, csv and docx files; it is null for PDFs and images.
+  CREATE TABLE IF NOT EXISTS files (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    canvas_id uuid NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+    name text NOT NULL,
+    mime text NOT NULL,
+    size int NOT NULL,
+    data bytea NOT NULL,
+    text_content text NULL,
+    status text NOT NULL DEFAULT 'ready',
+    error text NULL,
+    x real NOT NULL DEFAULT 0,
+    y real NOT NULL DEFAULT 0,
+    node_id uuid NULL REFERENCES nodes(id) ON DELETE SET NULL,
+    context_mode text NOT NULL DEFAULT 'off',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  );
+
+  CREATE INDEX IF NOT EXISTS files_canvas_id_idx ON files(canvas_id);
+  CREATE INDEX IF NOT EXISTS files_node_id_idx ON files(node_id);
 `;
 
 let schemaReady = false;
@@ -113,7 +163,7 @@ async function ensureSchema(attempt = 1) {
     }
 
     schemaReady = true;
-    console.log('[db] schema ready (canvases, nodes, stickies).');
+    console.log('[db] schema ready (canvases, nodes, stickies, files).');
   } catch (err) {
     const delayMs = Math.min(30000, 1000 * 2 ** Math.min(attempt, 5));
     console.error(`[db] schema creation failed (attempt ${attempt}): ${err.message}. Retrying in ${delayMs / 1000}s.`);
@@ -440,6 +490,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // --- API helpers -----------------------------------------------------------
 
+// What the page gets for a file: everything except the bytes and the extracted text.
+const FILE_COLUMNS = 'id, canvas_id, name, mime, size, status, error, x, y, node_id, context_mode, created_at, updated_at';
+
 class HttpError extends Error {
   constructor(status, message) {
     super(message);
@@ -480,7 +533,8 @@ app.use('/api', (req, res, next) => {
 
 app.get('/api/canvases', async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT c.id, c.title, c.created_at, count(n.id)::int AS node_count
+    `SELECT c.id, c.title, c.created_at, count(n.id)::int AS node_count,
+            (SELECT COALESCE(sum(f.size), 0)::float8 FROM files f WHERE f.canvas_id = c.id) AS file_bytes
        FROM canvases c
        LEFT JOIN nodes n ON n.canvas_id = c.id
       GROUP BY c.id
@@ -508,11 +562,13 @@ app.get('/api/canvases/:id', async (req, res) => {
   const id = requireUuid(req.params.id, 'Canvas id');
   const canvas = await pool.query('SELECT id, title, created_at, instructions FROM canvases WHERE id = $1', [id]);
   if (canvas.rowCount === 0) throw new HttpError(404, 'Canvas not found.');
-  const [nodes, stickies] = await Promise.all([
+  const [nodes, stickies, files] = await Promise.all([
     pool.query('SELECT * FROM nodes WHERE canvas_id = $1 ORDER BY created_at ASC, id ASC', [id]),
     pool.query('SELECT * FROM stickies WHERE canvas_id = $1 ORDER BY created_at ASC, id ASC', [id]),
+    // Metadata only: never the bytes or the extracted text.
+    pool.query(`SELECT ${FILE_COLUMNS} FROM files WHERE canvas_id = $1 ORDER BY created_at ASC, id ASC`, [id]),
   ]);
-  res.json({ canvas: canvas.rows[0], nodes: nodes.rows, stickies: stickies.rows });
+  res.json({ canvas: canvas.rows[0], nodes: nodes.rows, stickies: stickies.rows, files: files.rows });
 });
 
 // Save the canvas instructions. Body: { instructions: string | null }.
@@ -789,6 +845,239 @@ app.delete('/api/stickies/:id', async (req, res) => {
   const id = requireUuid(req.params.id, 'Sticky id');
   const { rowCount } = await pool.query('DELETE FROM stickies WHERE id = $1', [id]);
   if (rowCount === 0) throw new HttpError(404, 'Sticky not found.');
+  res.json({ ok: true, id });
+});
+
+// --- Files -----------------------------------------------------------------
+
+// One file per request, held in memory, never more than MAX_FILE_BYTES.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_FILE_BYTES, files: 1, fields: 10, fieldSize: 2000 },
+});
+
+function receiveUpload(req, res, next) {
+  upload.single('file')(req, res, (err) => {
+    if (!err) return next();
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') return next(new HttpError(413, 'File too large (max 10 MB).'));
+      return next(new HttpError(400, `Upload refused: ${err.message}.`));
+    }
+    next(new HttpError(400, 'The upload could not be read. Try again.'));
+  });
+}
+
+function readFileName(value) {
+  if (typeof value !== 'string') throw new HttpError(400, 'name must be a string.');
+  // No path parts, no control characters.
+  const name = value.replace(/[\u0000-\u001f\u007f]/g, '').split(/[\\/]/).pop().trim();
+  if (!name) throw new HttpError(400, 'name must not be empty.');
+  return name.slice(0, MAX_FILE_NAME_CHARS);
+}
+
+const startsWith = (buf, bytes, offset = 0) =>
+  buf.length >= offset + bytes.length && bytes.every((b, i) => buf[offset + i] === b);
+
+// Does the content match what the extension says? Stops a renamed .exe.
+function looksLike(ext, buf) {
+  switch (ext) {
+    case 'pdf': return buf.subarray(0, 1024).includes('%PDF-');
+    case 'png': return startsWith(buf, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    case 'jpg':
+    case 'jpeg': return startsWith(buf, [0xff, 0xd8, 0xff]);
+    case 'gif': return startsWith(buf, [0x47, 0x49, 0x46, 0x38]);
+    case 'webp': return startsWith(buf, [0x52, 0x49, 0x46, 0x46]) && startsWith(buf, [0x57, 0x45, 0x42, 0x50], 8);
+    case 'docx': return startsWith(buf, [0x50, 0x4b, 0x03, 0x04]);
+    default: return true;
+  }
+}
+
+// Text files: UTF-8 where it is valid, otherwise read byte for byte (Latin-1,
+// common for CSV exports). Anything with NUL bytes is not text.
+function decodeText(buf) {
+  if (buf.includes(0)) return null;
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(buf);
+  } catch {
+    text = buf.toString('latin1');
+  }
+  return text.replace(/^\uFEFF/, '');
+}
+
+// RFC 6266: an ASCII fallback plus the real name, percent-encoded.
+function contentDisposition(type, name) {
+  const fallback = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+  const encoded = encodeURIComponent(name).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  return `${type}; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
+
+// Multipart upload. Fields: file (required), name, x, y, node_id.
+app.post('/api/canvases/:id/files', receiveUpload, async (req, res) => {
+  const canvasId = requireUuid(req.params.id, 'Canvas id');
+  const body = req.body || {};
+  if (!req.file) throw new HttpError(400, 'No file was sent.');
+
+  // multer reads the multipart file name as Latin-1, so the page also sends it as a field.
+  const name = readFileName(typeof body.name === 'string' && body.name ? body.name : req.file.originalname);
+  const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
+  const type = FILE_TYPES[ext];
+  if (!type) {
+    throw new HttpError(415, `This file type is not supported${ext ? ` (.${ext})` : ''}. Accepted: ${ACCEPTED_LABEL}.`);
+  }
+  const data = req.file.buffer;
+  if (data.length === 0) throw new HttpError(400, 'The file is empty.');
+  if (!looksLike(ext, data)) {
+    throw new HttpError(415, `This does not look like a real .${ext} file, so it was refused.`);
+  }
+
+  const num = (value, label) => {
+    if (value === undefined || value === '') return 0;
+    const n = Number(value);
+    if (!Number.isFinite(n)) throw new HttpError(400, `${label} must be a number.`);
+    return n;
+  };
+  const x = num(body.x, 'x');
+  const y = num(body.y, 'y');
+  const nodeId = body.node_id ? requireUuid(body.node_id, 'node_id') : null;
+
+  const canvas = await pool.query('SELECT id FROM canvases WHERE id = $1', [canvasId]);
+  if (canvas.rowCount === 0) throw new HttpError(404, 'Canvas not found.');
+  if (nodeId) await requireNodeOnCanvas(nodeId, canvasId);
+
+  // Extract text now, so it is ready for previews, search and the AI.
+  let text = null;
+  let status = 'ready';
+  let error = null;
+  if (type.kind === 'text') {
+    text = decodeText(data);
+    if (text === null) throw new HttpError(415, `This does not look like a text file, so it was refused.`);
+  } else if (type.kind === 'word') {
+    try {
+      const result = await mammoth.extractRawText({ buffer: data });
+      text = (result.value || '').replace(/\u0000/g, '').trim();
+    } catch (err) {
+      console.error(`[files] could not read Word file "${name}": ${err.message}`);
+      status = 'error';
+      error = 'The text of this Word file could not be read. The file itself is saved and can be downloaded.';
+    }
+  }
+
+  const { rows } = await pool.query(
+    `INSERT INTO files (canvas_id, name, mime, size, data, text_content, status, error, x, y, node_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     RETURNING ${FILE_COLUMNS}`,
+    [canvasId, name, type.mime, data.length, data, text, status, error, x, y, nodeId]
+  );
+  res.status(201).json(rows[0]);
+});
+
+app.get('/api/files/:id', async (req, res) => {
+  const id = requireUuid(req.params.id, 'File id');
+  const { rows } = await pool.query(`SELECT ${FILE_COLUMNS} FROM files WHERE id = $1`, [id]);
+  if (rows.length === 0) throw new HttpError(404, 'File not found.');
+  res.json(rows[0]);
+});
+
+// The file's bytes. Never served as HTML: the type comes from our own table,
+// the browser may not guess another one, and only PDFs and images are shown
+// inline. ?download=1 always downloads.
+app.get('/api/files/:id/content', async (req, res) => {
+  const id = requireUuid(req.params.id, 'File id');
+  const { rows } = await pool.query('SELECT name, mime, data FROM files WHERE id = $1', [id]);
+  if (rows.length === 0) throw new HttpError(404, 'File not found.');
+  const file = rows[0];
+  const inline = INLINE_MIMES.has(file.mime) && req.query.download === undefined;
+  res.set({
+    'Content-Type': file.mime,
+    'Content-Length': String(file.data.length),
+    'Content-Disposition': contentDisposition(inline ? 'inline' : 'attachment', file.name),
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'private, max-age=3600',
+  });
+  // Nothing in a served file may run scripts or load anything. (Left off for
+  // PDFs, where it would stop the browser's own PDF viewer.)
+  if (file.mime !== 'application/pdf') res.set('Content-Security-Policy', "default-src 'none'; sandbox");
+  res.end(file.data);
+});
+
+// The file's text (txt, md, csv, and the text extracted from docx), loaded on
+// demand for previews and the reader. ?limit=N returns the first N characters.
+app.get('/api/files/:id/text', async (req, res) => {
+  const id = requireUuid(req.params.id, 'File id');
+  let limit = MAX_FILE_TEXT_RESPONSE;
+  if (req.query.limit !== undefined) {
+    const n = Number(req.query.limit);
+    if (!Number.isInteger(n) || n < 1) throw new HttpError(400, 'limit must be a positive whole number.');
+    limit = Math.min(n, MAX_FILE_TEXT_RESPONSE);
+  }
+  const { rows } = await pool.query(
+    `SELECT status, error, text_content IS NOT NULL AS has_text,
+            left(text_content, $2) AS text, char_length(text_content) AS total
+       FROM files WHERE id = $1`,
+    [id, limit]
+  );
+  if (rows.length === 0) throw new HttpError(404, 'File not found.');
+  const file = rows[0];
+  if (!file.has_text) {
+    throw new HttpError(404, file.status === 'error' && file.error ? file.error : 'This file has no text to show.');
+  }
+  res.json({ text: file.text, total: file.total, truncated: file.total > file.text.length });
+});
+
+// Partial update: only the fields present in the body change.
+app.patch('/api/files/:id', async (req, res) => {
+  const id = requireUuid(req.params.id, 'File id');
+  const body = req.body || {};
+
+  const existing = await pool.query('SELECT canvas_id, node_id, context_mode, name FROM files WHERE id = $1', [id]);
+  if (existing.rowCount === 0) throw new HttpError(404, 'File not found.');
+  const current = existing.rows[0];
+
+  const sets = [];
+  const values = [id];
+  const set = (column, value) => { values.push(value); sets.push(`${column} = $${values.length}`); };
+
+  if (body.x !== undefined) set('x', readCoord(body.x, 'x', { required: true }));
+  if (body.y !== undefined) set('y', readCoord(body.y, 'y', { required: true }));
+  if (body.name !== undefined) {
+    const name = readFileName(body.name);
+    // The extension decides how the file is treated, so a rename must keep it.
+    const ext = (n) => (n.includes('.') ? n.split('.').pop().toLowerCase() : '');
+    if (ext(name) !== ext(current.name)) throw new HttpError(400, `The name must keep the file's ending (.${ext(current.name)}).`);
+    set('name', name);
+  }
+  let nodeId = current.node_id;
+  if (body.node_id !== undefined) {
+    nodeId = body.node_id === null ? null : requireUuid(body.node_id, 'node_id');
+    if (nodeId) await requireNodeOnCanvas(nodeId, current.canvas_id);
+    set('node_id', nodeId);
+  }
+  let mode = current.context_mode;
+  if (body.context_mode !== undefined) {
+    if (!CONTEXT_MODES.includes(body.context_mode)) {
+      throw new HttpError(400, `context_mode must be one of: ${CONTEXT_MODES.join(', ')}.`);
+    }
+    mode = body.context_mode;
+    if (mode === 'branch' && !nodeId) throw new HttpError(400, 'context_mode "branch" needs the file to be attached to a node.');
+    set('context_mode', mode);
+  } else if (mode === 'branch' && !nodeId) {
+    set('context_mode', 'off'); // detached: there is no branch left to scope to
+  }
+  if (sets.length === 0) throw new HttpError(400, 'Nothing to update.');
+
+  const { rows } = await pool.query(
+    `UPDATE files SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 RETURNING ${FILE_COLUMNS}`,
+    values
+  );
+  if (rows.length === 0) throw new HttpError(404, 'File not found.');
+  res.json(rows[0]);
+});
+
+app.delete('/api/files/:id', async (req, res) => {
+  const id = requireUuid(req.params.id, 'File id');
+  const { rowCount } = await pool.query('DELETE FROM files WHERE id = $1', [id]);
+  if (rowCount === 0) throw new HttpError(404, 'File not found.');
   res.json({ ok: true, id });
 });
 
