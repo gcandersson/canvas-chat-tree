@@ -845,6 +845,115 @@
       pointer-events: none;
     }
 
+    /* Branch context: the same round badge as the pin, in the card's accent colour */
+    .pin-mark.branch { background: var(--node, var(--accent)); }
+    .edges line.tether.branch { stroke-dasharray: none; stroke-width: 2.5; }
+    .edges line.link-draft { stroke: var(--accent); stroke-width: 2.5; stroke-dasharray: 6 6; stroke-linecap: round; }
+
+    /* Attach handle: drag from it onto a card */
+    .attach-handle {
+      position: absolute;
+      left: -9px;
+      top: 50%;
+      width: 16px;
+      height: 16px;
+      margin-top: -8px;
+      padding: 0;
+      border-radius: 50%;
+      background: var(--panel);
+      border: 2px solid var(--accent);
+      box-shadow: 0 2px 6px var(--shadow-2);
+      cursor: crosshair;
+      opacity: 0.55;
+      touch-action: none;
+    }
+    .attach-handle:hover:not(:disabled), .attach-handle.on { opacity: 1; background: var(--accent); border-color: var(--accent); }
+
+    /* Context control on a bubble, and the menu it opens */
+    .ctx-btn { width: 20px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+    .filebub-bar .ctx-btn { width: 22px; }
+    .ctx-btn.on, .ctx-btn.on:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+    .sticky.menu-open, .filebub.menu-open { z-index: 6; }
+    .bubble-menu {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      width: 250px;
+      padding: 6px;
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--border-strong);
+      border-radius: 10px;
+      box-shadow: 0 10px 28px var(--shadow-3);
+      cursor: default;
+      font-size: 13px;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .menu-label { padding: 4px 8px 2px; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+    .menu-sep { height: 1px; margin: 6px 2px; background: var(--border); }
+    .bubble-menu .menu-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      width: 100%;
+      height: auto;
+      padding: 6px 8px;
+      border: 0;
+      border-radius: 6px;
+      background: none;
+      color: var(--text);
+      font-size: 13px;
+      text-align: left;
+      white-space: normal;
+    }
+    .bubble-menu .menu-item:hover:not(:disabled) { background: var(--panel-3); }
+    .bubble-menu .menu-item.on { background: var(--primary-bg); }
+    .bubble-menu .menu-item .tick { flex: none; width: 14px; color: var(--accent); }
+    .bubble-menu .menu-item .what { min-width: 0; overflow-wrap: anywhere; }
+    .bubble-menu .menu-item small { display: block; color: var(--muted); font-size: 11px; line-height: 1.35; }
+
+    /* Context chips: what a node can see, under its header */
+    .card-chips {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 6px 12px;
+      border-bottom: 1px solid var(--border);
+      overflow: hidden;
+    }
+    .chip {
+      flex: 0 1 auto;
+      min-width: 0;
+      max-width: 112px;
+      height: 22px;
+      padding: 0 7px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      border-radius: 11px;
+      background: var(--panel-2);
+      border: 1px solid var(--border-strong);
+      color: var(--text-soft);
+    }
+    .chip svg { flex: none; }
+    .chip .chip-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    .chip.branch { border-color: var(--chip, var(--border-strong)); }
+    .chip.branch svg { color: var(--chip, currentColor); }
+    .chip.more { flex: none; color: var(--muted); cursor: default; }
+
+    /* Attach to…: cards are the things to click */
+    .world.picking .card { cursor: copy; }
+    .world.picking .card:hover { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent), 0 4px 16px var(--shadow-1); }
+    .world.picking .card * { cursor: copy; }
+
+    /* Context panel: groups of branch items */
+    .ctx-group { display: block; width: 100%; height: auto; margin: 12px 0 6px; padding: 0; border: 0; background: none; text-align: left; font-weight: 600; white-space: normal; overflow-wrap: anywhere; }
+    .ctx-group:hover:not(:disabled) { background: none; text-decoration: underline; }
+    .ctx-group .bar { display: inline-block; width: 10px; height: 10px; margin-right: 7px; border-radius: 3px; background: var(--node, var(--border-strong)); }
+    .ctx-section { margin-top: 24px; }
+
     /* Toast: short messages about a whole-canvas action (Tidy and its undo) */
     .toast {
       position: absolute;
@@ -1061,7 +1170,7 @@
       return html`<span class="count">${Math.max(0, Math.ceil((until - now) / 1000))}s</span>`;
     }
 
-    function Card({ node, colour, isActive, liveText, isTarget, isDrop, isDragging, isReading, pendingSince, pollError, retry, move, onHeight, onContinue, onBranch, onRetry, onExpand, onAddSticky, descendants, isCollapsed, onToggleCollapse, onDragStart, onDragMove, onDragEnd, onSaveRetry }) {
+    function Card({ node, colour, isActive, liveText, isTarget, isDrop, isDragging, isReading, chips, onChip, pendingSince, pollError, retry, move, onHeight, onContinue, onBranch, onRetry, onExpand, onAddSticky, descendants, isCollapsed, onToggleCollapse, onDragStart, onDragMove, onDragEnd, onSaveRetry }) {
       const ref = useRef(null);
       const bodyRef = useRef(null);
       const stickToBottom = useRef(true);
@@ -1157,6 +1266,18 @@
             onPointerUp=${onDragEnd}
             onPointerCancel=${onDragEnd}
           >${node.prompt}</div>
+          ${chips && chips.length > 0 && html`
+            <div class="card-chips" aria-label="What this node can see">
+              ${chips.slice(0, 3).map((c) => html`
+                <button
+                  key=${c.kind + c.id}
+                  class=${'chip ' + c.scope}
+                  style=${c.scope === 'branch' ? { '--chip': c.accent } : null}
+                  title=${`${c.kind === 'file' ? 'File' : 'Note'}: ${c.label} · ${c.scope === 'canvas' ? 'whole canvas' : c.own ? 'attached to this node' : `attached to “${c.from}”`}. Click to show it.`}
+                  onClick=${() => onChip(c.kind, c.id)}
+                ><${ModeIcon} mode=${c.scope} /><span class="chip-text">${c.label}</span></button>`)}
+              ${chips.length > 3 && html`<span class="chip more" title=${chips.slice(3).map((c) => c.label).join('\n')}>+${chips.length - 3}</span>`}
+            </div>`}
           ${body}
           ${note}
           ${actions}
@@ -1238,7 +1359,7 @@
 
     // A sticky note. Plain text only. Double-click to edit, drag to move.
     // Everything in the bottom bar is a normal button and never starts a drag.
-    function Sticky({ sticky, x, y, isEditing, isDragging, onPath, save, removal, onHeight, onDragStart, onDragMove, onDragEnd, onEdit, onEndEdit, onInput, onColor, onAskDelete, onCancelDelete, onDelete, onRetrySave, onPin }) {
+    function Sticky({ sticky, x, y, isEditing, isDragging, onPath, save, removal, onHeight, onDragStart, onDragMove, onDragEnd, onEdit, onEndEdit, onInput, onColor, onAskDelete, onCancelDelete, onDelete, onRetrySave, ctx }) {
       const ref = useRef(null);
       const inputRef = useRef(null);
 
@@ -1260,7 +1381,7 @@
       }, [isEditing]);
 
       const stop = (e) => e.stopPropagation();
-      const inBar = (e) => e.target.closest('.sticky-bar');
+      const inBar = (e) => e.target.closest('.sticky-bar, .bubble-menu, .attach-handle');
 
       let bar;
       if (removal) {
@@ -1291,19 +1412,14 @@
               onClick=${() => onColor(sticky.id, c)}
             ></button>`)}
           ${state}
-          <button
-            class=${'mini pin' + (sticky.in_context ? ' on' : '')}
-            title=${sticky.in_context ? 'Used as AI context on this canvas. Click to stop.' : 'Use as AI context'}
-            aria-label="Use as AI context"
-            aria-pressed=${!!sticky.in_context}
-            onClick=${() => onPin(sticky.id, !sticky.in_context)}
-          ><${PinIcon} filled=${!!sticky.in_context} /></button>
+          <${ContextButton} kind="sticky" item=${sticky} ctx=${ctx} className="mini" />
           <button class="mini x" title="Delete this note" aria-label="Delete this note" onClick=${() => onAskDelete(sticky.id)}>×</button>`;
       }
 
       return html`
         <div
-          class=${'sticky c-' + sticky.color + (isDragging ? ' dragging' : '') + (onPath ? ' onpath' : '')}
+          class=${'sticky c-' + sticky.color + (isDragging ? ' dragging' : '') + (onPath ? ' onpath' : '') + (ctx.menuOpen ? ' menu-open' : '')}
+          data-sticky=${sticky.id}
           ref=${ref}
           style=${{ left: x + 'px', top: y + 'px' }}
           onPointerDown=${(e) => { if (!isEditing && !inBar(e)) onDragStart(e, sticky); }}
@@ -1312,7 +1428,7 @@
           onPointerCancel=${onDragEnd}
           onDblClick=${(e) => { if (!inBar(e)) onEdit(sticky.id); }}
         >
-          ${sticky.in_context && html`<span class="pin-mark" title="Pinned: sent to the AI as context on this canvas"><${PinIcon} filled=${true} /></span>`}
+          <${BubbleExtras} kind="sticky" item=${sticky} ctx=${ctx} />
           ${isEditing
             ? html`<textarea
                 ref=${inputRef}
@@ -1327,6 +1443,87 @@
             : html`<div class=${'sticky-text scroll' + (sticky.content ? '' : ' empty')} title="Double-click to edit · drag to move">${sticky.content || 'Double-click to write'}</div>`}
           <div class="sticky-bar" onPointerDown=${stop}>${bar}</div>
         </div>`;
+    }
+
+    // --- Context control shared by stickies and file bubbles ------------------
+
+    const MODE_LABEL = { off: 'Off', branch: 'This branch', canvas: 'Whole canvas' };
+    const modeOf = (item) => (item.context_mode === 'branch' && item.node_id ? 'branch' : item.context_mode === 'canvas' ? 'canvas' : 'off');
+
+    const BranchIcon = () => html`
+      <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4.5 2.5v11M4.5 9.5c0-3 7-1.5 7-5" /><circle cx="11.5" cy="3.5" r="1.4" fill="currentColor" stroke="none" /><circle cx="4.5" cy="13.2" r="1.4" fill="currentColor" stroke="none" />
+      </svg>`;
+    const OffIcon = () => html`
+      <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+        <circle cx="8" cy="8" r="5.2" /><path d="M4.4 11.6l7.2-7.2" />
+      </svg>`;
+    const ModeIcon = ({ mode }) => (mode === 'branch' ? html`<${BranchIcon} />` : mode === 'canvas' ? html`<${PinIcon} filled=${true} />` : html`<${OffIcon} />`);
+
+    // The small button on a bubble that shows its context mode and opens the bubble menu.
+    function ContextButton({ kind, item, ctx, className }) {
+      const mode = modeOf(item);
+      const what = mode === 'branch' ? `AI context: this branch (“${ctx.nodeTitle}” and everything below it)`
+        : mode === 'canvas' ? 'AI context: whole canvas'
+        : 'AI context: off';
+      return html`
+        <button
+          class=${className + ' ctx-btn' + (mode !== 'off' ? ' on' : '')}
+          title=${what + '. Click to change, attach or detach.'}
+          aria-label=${what}
+          aria-haspopup="menu"
+          aria-expanded=${!!ctx.menuOpen}
+          onClick=${() => ctx.onToggleMenu(item.id)}
+        ><${ModeIcon} mode=${mode} /></button>`;
+    }
+
+    // Drawn on the bubble itself: its badge (pin or branch), the attach handle
+    // and, when open, the bubble menu.
+    function BubbleExtras({ kind, item, ctx }) {
+      const mode = modeOf(item);
+      const attached = !!item.node_id;
+      const stop = (e) => e.stopPropagation();
+      const option = (value, hint, disabled) => html`
+        <button
+          class=${'menu-item' + (mode === value ? ' on' : '')}
+          role="menuitemradio"
+          aria-checked=${mode === value}
+          disabled=${disabled}
+          onClick=${() => ctx.onMode(kind, item.id, value)}
+        >
+          <span class="tick">${mode === value ? '●' : '○'}</span>
+          <span class="what">${MODE_LABEL[value]}<small>${hint}</small></span>
+        </button>`;
+      return html`
+        ${mode === 'canvas' && html`<span class="pin-mark" title="Whole canvas: every node on this canvas can use it"><${PinIcon} filled=${true} /></span>`}
+        ${mode === 'branch' && html`<span class="pin-mark branch" style=${{ '--node': ctx.accent }} title=${`This branch: “${ctx.nodeTitle}” and everything below it can use it`}><${BranchIcon} /></span>`}
+        <button
+          class=${'attach-handle' + (ctx.isLinking ? ' on' : '')}
+          title="Drag onto a card to attach"
+          aria-label="Attach: drag onto a card"
+          onPointerDown=${(e) => ctx.onLinkStart(e, kind, item)}
+          onPointerMove=${ctx.onLinkMove}
+          onPointerUp=${ctx.onLinkEnd}
+          onPointerCancel=${ctx.onLinkEnd}
+          onDblClick=${stop}
+        ></button>
+        ${ctx.menuOpen && html`
+          <div class="bubble-menu" role="menu" onPointerDown=${stop} onDblClick=${stop}>
+            <div class="menu-label">AI context</div>
+            ${option('off', 'Not given to the AI')}
+            ${option('branch', attached ? `“${ctx.nodeTitle}” and every node below it` : 'Attach it to a card first', !attached)}
+            ${option('canvas', 'Every node on this canvas')}
+            <div class="menu-sep"></div>
+            <button class="menu-item" role="menuitem" onClick=${() => ctx.onAttachPick(kind, item.id)}>
+              <span class="tick"></span>
+              <span class="what">${attached ? 'Attach to another card…' : 'Attach to…'}<small>Then click the card</small></span>
+            </button>
+            ${attached && html`
+              <button class="menu-item" role="menuitem" onClick=${() => ctx.onDetach(kind, item.id)}>
+                <span class="tick"></span>
+                <span class="what">Detach<small>From “${ctx.nodeTitle}”</small></span>
+              </button>`}
+          </div>`}`;
     }
 
     // --- File bubbles -------------------------------------------------------
@@ -1367,7 +1564,7 @@
 
     // An uploaded file on the canvas. Click to open it in the reader panel,
     // drag to move. The bottom bar holds normal buttons and never starts a drag.
-    function FileBubble({ file, x, y, isDragging, isReading, onPath, save, removal, onHeight, onDragStart, onDragMove, onDragEnd, onAskDelete, onCancelDelete, onDelete, onRetrySave }) {
+    function FileBubble({ file, x, y, isDragging, isReading, onPath, save, removal, onHeight, onDragStart, onDragMove, onDragEnd, onAskDelete, onCancelDelete, onDelete, onRetrySave, ctx }) {
       const ref = useRef(null);
       const kind = fileKind(file.name);
       const hasText = (kind === 'text' || kind === 'word') && file.status === 'ready';
@@ -1384,7 +1581,7 @@
       }, [file.id, onHeight]);
 
       const stop = (e) => e.stopPropagation();
-      const inBar = (e) => e.target.closest('.filebub-bar');
+      const inBar = (e) => e.target.closest('.filebub-bar, .bubble-menu, .attach-handle');
 
       let inner;
       if (kind === 'image') {
@@ -1417,16 +1614,18 @@
         bar = html`
           <span class="state bad" title=${save.error}>Not saved</span>
           <button onClick=${() => onRetrySave(file.id)}>Retry</button>
+          <${ContextButton} kind="file" item=${file} ctx=${ctx} className="" />
           <button class="x" title="Delete this file" aria-label="Delete this file" onClick=${() => onAskDelete(file.id)}>×</button>`;
       } else {
         bar = html`
           <span class="state">${save && save.state === 'saving' ? 'Saving…' : `${KIND_LABEL[kind]} · ${formatBytes(file.size)}`}</span>
+          <${ContextButton} kind="file" item=${file} ctx=${ctx} className="" />
           <button class="x" title="Delete this file" aria-label="Delete this file" onClick=${() => onAskDelete(file.id)}>×</button>`;
       }
 
       return html`
         <div
-          class=${'filebub' + (isDragging ? ' dragging' : '') + (isReading ? ' reading' : '') + (onPath ? ' onpath' : '') + (file.status === 'error' ? ' bad' : '')}
+          class=${'filebub' + (isDragging ? ' dragging' : '') + (isReading ? ' reading' : '') + (onPath ? ' onpath' : '') + (file.status === 'error' ? ' bad' : '') + (ctx.menuOpen ? ' menu-open' : '')}
           ref=${ref}
           data-file=${file.id}
           style=${{ left: x + 'px', top: y + 'px' }}
@@ -1442,6 +1641,7 @@
           </div>
           <div class="filebub-preview">${inner}</div>
           <div class="filebub-bar" onPointerDown=${stop}>${bar}</div>
+          <${BubbleExtras} kind="file" item=${file} ctx=${ctx} />
         </div>`;
     }
 
@@ -1630,7 +1830,7 @@
 
     // Side panel: what the AI gets with every prompt on this canvas.
     // Mounted once per canvas (it is keyed by canvas id).
-    function ContextPanel({ canvas, stickies, onSaveInstructions, onUnpin, onShowSticky, onClose }) {
+    function ContextPanel({ canvas, stickies, files, nodes, colours, onSaveInstructions, onSetMode, onShowBubble, onShowNode, onClose }) {
       const [draft, setDraft] = useState(canvas.instructions || '');
       const [save, setSave] = useState({ state: 'idle', error: null }); // idle | saving | saved | failed
       const draftRef = useRef(draft);
@@ -1666,6 +1866,33 @@
       }, []);
 
       const { pinned, included, leftOut, used } = selectPinnedNotes(stickies);
+      const canvasFiles = files.filter((f) => modeOf(f) === 'canvas');
+      const canvasCount = pinned.length + canvasFiles.length;
+
+      // Branch context, grouped by the node each item is attached to (nodes in creation order).
+      const groups = [];
+      for (const node of nodes) {
+        const items = [
+          ...stickies.filter((st) => st.node_id === node.id && modeOf(st) === 'branch').map((st) => ({ kind: 'sticky', item: st })),
+          ...files.filter((f) => f.node_id === node.id && modeOf(f) === 'branch').map((f) => ({ kind: 'file', item: f })),
+        ];
+        if (items.length > 0) groups.push({ node, items });
+      }
+      const branchCount = groups.reduce((sum, g) => sum + g.items.length, 0);
+
+      const row = (kind, item, tags) => {
+        const empty = kind === 'sticky' && !(item.content || '').trim();
+        return html`
+          <div key=${kind + item.id} class=${'ctx-note' + (empty || (tags && tags.out) ? ' out' : '')}>
+            ${kind === 'sticky'
+              ? html`<span class="swatch" style=${{ '--dot': STICKY_LINE[item.color] || STICKY_LINE.yellow }}></span>`
+              : html`<${FileIcon} name=${item.name} />`}
+            <button class="line" onClick=${() => onShowBubble(kind, item.id)} title="Show it on the canvas">${kind === 'file' ? item.name : empty ? '(empty note)' : firstLine(item.content)}</button>
+            ${empty && html`<span class="tag">empty, not sent</span>`}
+            ${tags && tags.out && !empty && html`<span class="tag bad">left out</span>`}
+            <button class="unpin" onClick=${() => onSetMode(kind, item.id, 'off')} title="Set its AI context to Off">Turn off</button>
+          </div>`;
+      };
 
       let state;
       if (save.state === 'saving') state = html`<div class="ctx-state"><${Spinner} label="Saving…" /></div>`;
@@ -1682,7 +1909,7 @@
             <button class="close" onClick=${onClose} aria-label="Close context panel" title="Close (Esc)">×</button>
           </div>
           <div class="reader-scroll scroll">
-            <p class="ctx-intro">The AI gets this with every prompt on this canvas, before the path to the node. Other canvases are not affected.</p>
+            <p class="ctx-intro">What the AI is given on this canvas, besides the path to the node. Other canvases are not affected.</p>
 
             <div class="reader-label">Instructions</div>
             <textarea
@@ -1695,8 +1922,8 @@
             ${state}
 
             <div class="reader-label">
-              Pinned notes
-              <small>${pinned.length === 0 ? 'none' : `${pinned.length} · ${used.toLocaleString('en-GB')} of ${PINNED_NOTES_CAP.toLocaleString('en-GB')} characters`}</small>
+              Whole canvas
+              <small>${canvasCount === 0 ? 'nothing' : `${canvasCount} ${canvasCount === 1 ? 'item' : 'items'}${pinned.length > 0 ? ` · notes use ${used.toLocaleString('en-GB')} of ${PINNED_NOTES_CAP.toLocaleString('en-GB')} characters` : ''}`}</small>
             </div>
             ${leftOut.length > 0 && html`
               <div class="ctx-warning" role="alert">
@@ -1704,20 +1931,24 @@
                 ${leftOut.length === 1 ? ' this note does not fit, so it is not sent to the AI:' : ' these notes do not fit, so they are not sent to the AI:'}
                 <ul>${leftOut.map((st) => html`<li key=${st.id}>${firstLine(st.content)}</li>`)}</ul>
               </div>`}
-            ${pinned.length === 0 && html`
-              <div class="ctx-empty">No pinned notes. Click the pin on a sticky to send it to the AI with every prompt on this canvas.</div>`}
-            ${pinned.map((st) => {
-              const empty = !(st.content || '').trim();
-              const out = !empty && !included.has(st.id);
-              return html`
-                <div key=${st.id} class=${'ctx-note' + (out || empty ? ' out' : '')}>
-                  <span class="swatch" style=${{ '--dot': STICKY_LINE[st.color] || STICKY_LINE.yellow }}></span>
-                  <button class="line" onClick=${() => onShowSticky(st)} title="Show this sticky on the canvas">${empty ? '(empty note)' : firstLine(st.content)}</button>
-                  ${empty && html`<span class="tag">empty, not sent</span>`}
-                  ${out && html`<span class="tag bad">left out</span>`}
-                  <button class="unpin" onClick=${() => onUnpin(st.id, false)}>Unpin</button>
-                </div>`;
-            })}
+            ${canvasCount === 0 && html`
+              <div class="ctx-empty">Nothing yet. Open the context control on a sticky or a file and choose “Whole canvas” to give it to every node on this canvas.</div>`}
+            ${pinned.map((st) => row('sticky', st, { out: !!(st.content || '').trim() && !included.has(st.id) }))}
+            ${canvasFiles.map((f) => row('file', f))}
+
+            <div class="reader-label ctx-section">
+              Attached to branches
+              <small>${branchCount === 0 ? 'nothing' : `${branchCount} ${branchCount === 1 ? 'item' : 'items'}`}</small>
+            </div>
+            ${branchCount === 0 && html`
+              <div class="ctx-empty">Nothing yet. Attach a sticky or a file to a card and choose “This branch”: that node and every node below it can then use it, and no other branch can.</div>`}
+            ${groups.map((g) => html`
+              <div key=${g.node.id}>
+                <button class="ctx-group" onClick=${() => onShowNode(g.node.id)} title="Show this node on the canvas">
+                  <span class="bar" style=${{ '--node': `var(--branch-${colours.get(g.node.id)})` }}></span>${snippet(g.node.prompt, 70)}
+                </button>
+                ${g.items.map(({ kind, item }) => row(kind, item))}
+              </div>`)}
           </div>
         </aside>`;
     }
@@ -1811,7 +2042,7 @@
     // cap, otherwise it is left out; empty notes are skipped.
     function selectPinnedNotes(stickies) {
       const pinned = stickies
-        .filter((st) => st.in_context)
+        .filter((st) => modeOf(st) === 'canvas')
         .sort((a, b) => (a.created_at > b.created_at ? -1 : a.created_at < b.created_at ? 1 : a.id > b.id ? -1 : 1));
       const included = new Set();
       const leftOut = [];
@@ -2093,7 +2324,9 @@
       const [streamTick, setStreamTick] = useState(0);  // bumped when a node drops from streaming to polling
       const [fileReaderId, setFileReaderId] = useState(null);     // file shown in the reader panel
       const [uploads, setUploads] = useState([]);                 // files on their way to the server
-      const [fileSaves, setFileSaves] = useState({});             // file id -> { state: saving|failed, error, patch }
+      const [menuFor, setMenuFor] = useState(null);               // id of the bubble whose menu is open
+      const [linking, setLinking] = useState(null);               // { kind, id, x, y, nodeId } while a connector is dragged from an attach handle
+      const [attachPick, setAttachPick] = useState(null);         // { kind, id } while "Attach to…" waits for a click on a card
       const [draggingFile, setDraggingFile] = useState(null);
       const [dropping, setDropping] = useState(null);             // null, or { nodeId } while files are dragged over the canvas
 
@@ -2171,7 +2404,9 @@
         if (flushStickiesRef.current) flushStickiesRef.current();
         setReaderId(null);
         setFileReaderId(null);
-        setFileSaves({});
+        setMenuFor(null);
+        setLinking(null);
+        setAttachPick(null);
         setDropping(null);
         // Uploads still running belong to the canvas being left: stop them.
         for (const request of uploadRequests.current.values()) request.abort();
@@ -2874,8 +3109,10 @@
           return rest;
         });
       };
-      const saveSticky = async (id, patch) => {
-        const q = saveQueue.current[id] || (saveQueue.current[id] = { inFlight: false, queued: null, failed: null });
+      // The same queue saves file bubbles: kind 'file' sends to the files API.
+      const saveSticky = async (id, patch, kind) => {
+        const q = saveQueue.current[id] || (saveQueue.current[id] = { inFlight: false, queued: null, failed: null, kind: 'sticky' });
+        if (kind) q.kind = kind;
         let body = { ...(q.failed || {}), ...patch };
         q.failed = null;
         if (q.inFlight) { q.queued = { ...(q.queued || {}), ...body }; return; }
@@ -2884,7 +3121,7 @@
         clearTimeout(savedTimers.current[id]);
         setSaveState(id, { state: 'saving', error: null });
         try {
-          await api('/api/stickies/' + id, { method: 'PATCH', body: JSON.stringify(body) });
+          await api((q.kind === 'file' ? '/api/files/' : '/api/stickies/') + id, { method: 'PATCH', body: JSON.stringify(body) });
           q.inFlight = false;
           if (q.queued) { const next = q.queued; q.queued = null; return saveSticky(id, next); }
           setSaveState(id, { state: 'saved', error: null });
@@ -2922,11 +3159,6 @@
       const onStickyColor = (id, color) => {
         updateSticky(id, { color });
         saveSticky(id, { color });
-      };
-      // Pin or unpin: a pinned sticky is sent to the AI with every prompt on this canvas.
-      const onStickyPin = (id, pinned) => {
-        updateSticky(id, { in_context: pinned });
-        saveSticky(id, { in_context: pinned });
       };
 
       // Creating. A free sticky goes to the centre of the viewport. An attached
@@ -3031,22 +3263,123 @@
         setList((l) => ({ ...l, items: l.items.map((c) => (c.id === canvasId ? { ...c, file_bytes: Math.max(0, (c.file_bytes || 0) + delta) } : c)) }));
       };
 
-      // Saving a change to a file (its position). The latest change wins.
-      const fileSaveSeq = useRef({});
-      const saveFile = async (id, patch) => {
-        const seq = (fileSaveSeq.current[id] || 0) + 1;
-        fileSaveSeq.current[id] = seq;
-        setFileSaves((m) => ({ ...m, [id]: { state: 'saving', error: null, patch } }));
-        try {
-          await api('/api/files/' + id, { method: 'PATCH', body: JSON.stringify(patch) });
-          if (fileSaveSeq.current[id] !== seq) return;
-          setFileSaves((m) => { const { [id]: _, ...rest } = m; return rest; });
-        } catch (err) {
-          if (fileSaveSeq.current[id] !== seq) return;
-          setFileSaves((m) => ({ ...m, [id]: { state: 'failed', error: err.message, patch } }));
-        }
+      // Files are saved through the same queue as stickies.
+      const saveFile = (id, patch) => saveSticky(id, patch, 'file');
+
+      // -- Attach and scope: one context model for stickies and files -----------
+
+      const findBubble = (kind, id) => (kind === 'file' ? doc.files : doc.stickies).find((item) => item.id === id);
+      const changeBubble = (kind, id, patch) => {
+        if (kind === 'file') { updateFile(id, patch); saveFile(id, patch); }
+        else { updateSticky(id, patch); saveSticky(id, patch); }
       };
-      const retryFileSave = (id) => { if (fileSaves[id]) saveFile(id, fileSaves[id].patch); };
+
+      // Off, This branch or Whole canvas. in_context is kept in step for stickies.
+      const setContextMode = (kind, id, mode) => {
+        const item = findBubble(kind, id);
+        if (!item || (mode === 'branch' && !item.node_id)) return;
+        if (kind === 'file') { updateFile(id, { context_mode: mode }); saveFile(id, { context_mode: mode }); }
+        else { updateSticky(id, { context_mode: mode, in_context: mode === 'canvas' }); saveSticky(id, { context_mode: mode }); }
+      };
+
+      // Attaching and detaching change what x and y mean (offset from the card,
+      // or canvas position), so both are converted and nothing moves on screen.
+      const attachBubble = (kind, id, nodeId) => {
+        const item = findBubble(kind, id);
+        const node = doc.nodes.find((n) => n.id === nodeId);
+        if (!item || !node || item.node_id === nodeId) return;
+        const pos = stickyPosition(item, new Map(doc.nodes.map((n) => [n.id, n])));
+        changeBubble(kind, id, { node_id: nodeId, x: Math.round(pos.x - node.x), y: Math.round(pos.y - node.y) });
+      };
+      const detachBubble = (kind, id) => {
+        const item = findBubble(kind, id);
+        if (!item || !item.node_id) return;
+        const pos = stickyPosition(item, new Map(doc.nodes.map((n) => [n.id, n])));
+        const patch = { node_id: null, x: Math.round(pos.x), y: Math.round(pos.y) };
+        // Without a card there is no branch to scope to.
+        if (item.context_mode === 'branch') {
+          patch.context_mode = 'off';
+          if (kind === 'sticky') updateSticky(id, { in_context: false });
+        }
+        changeBubble(kind, id, patch);
+        setMenuFor(null);
+      };
+
+      // The bubble menu: one open at a time; a press anywhere else or Esc closes it.
+      const toggleMenu = (id) => setMenuFor((current) => (current === id ? null : id));
+      useEffect(() => {
+        if (!menuFor) return undefined;
+        const onDown = (e) => { if (!e.target.closest || !e.target.closest('.bubble-menu, .ctx-btn')) setMenuFor(null); };
+        const onKey = (e) => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); setMenuFor(null); } };
+        window.addEventListener('pointerdown', onDown, true);
+        window.addEventListener('keydown', onKey, true);
+        return () => {
+          window.removeEventListener('pointerdown', onDown, true);
+          window.removeEventListener('keydown', onKey, true);
+        };
+      }, [menuFor]);
+
+      // "Attach to…": the next click on a card attaches the bubble; a click
+      // anywhere else, or Esc, cancels. Nothing under the click reacts to it.
+      const startAttachPick = (kind, id) => { setMenuFor(null); setAttachPick({ kind, id }); };
+      const pickHandled = useRef(false);
+      const onPickDown = (e) => {
+        if (!attachPick || e.target.closest('.toast')) return;
+        e.stopPropagation();
+        pickHandled.current = true;
+        setTimeout(() => { pickHandled.current = false; }, 500);
+        const card = e.target.closest('.card');
+        if (card && card.dataset.id) attachBubble(attachPick.kind, attachPick.id, card.dataset.id);
+        setAttachPick(null);
+      };
+      const onPickClick = (e) => {
+        if (!pickHandled.current) return;
+        pickHandled.current = false;
+        e.stopPropagation();
+        e.preventDefault();
+      };
+      useEffect(() => {
+        if (!attachPick) return undefined;
+        const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); setAttachPick(null); } };
+        window.addEventListener('keydown', onKey, true);
+        return () => window.removeEventListener('keydown', onKey, true);
+      }, [attachPick]);
+
+      // Dragging a connector from a bubble's attach handle. The card under the
+      // pointer lights up; releasing on it attaches. Neither card nor bubble moves.
+      const linkDrag = useRef(null);
+      const cardUnder = (e) => {
+        const el = document.elementFromPoint(e.clientX, e.clientY);
+        const card = el && el.closest ? el.closest('.card') : null;
+        return card && card.dataset.id ? card.dataset.id : null;
+      };
+      const canvasPoint = (e) => {
+        const rect = viewportRef.current.getBoundingClientRect();
+        const v = viewRef.current;
+        return { x: (e.clientX - rect.left - v.x) / v.k, y: (e.clientY - rect.top - v.y) / v.k };
+      };
+      const onLinkStart = (e, kind, item) => {
+        if (e.button !== 0) return;
+        e.stopPropagation();
+        e.preventDefault();
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+        linkDrag.current = { pointerId: e.pointerId, kind, id: item.id };
+        setMenuFor(null);
+        setLinking({ kind, id: item.id, ...canvasPoint(e), nodeId: null });
+      };
+      const onLinkMove = (e) => {
+        const d = linkDrag.current;
+        if (!d || d.pointerId !== e.pointerId) return;
+        setLinking({ kind: d.kind, id: d.id, ...canvasPoint(e), nodeId: cardUnder(e) });
+      };
+      const onLinkEnd = (e) => {
+        const d = linkDrag.current;
+        if (!d || d.pointerId !== e.pointerId) return;
+        linkDrag.current = null;
+        setLinking(null);
+        const nodeId = e.type === 'pointerup' ? cardUnder(e) : null;
+        if (nodeId) attachBubble(d.kind, d.id, nodeId);
+      };
 
       // Uploading. Each file is its own request, so each has its own progress.
       const patchUpload = (key, patch) => setUploads((list) => list.map((u) => (u.key === key ? { ...u, ...patch } : u)));
@@ -3205,7 +3538,8 @@
           await api('/api/files/' + id, { method: 'DELETE' });
           setDoc((d) => ({ ...d, files: d.files.filter((f) => f.id !== id) }));
           setFileReaderId((current) => (current === id ? null : current));
-          setFileSaves((m) => { const { [id]: _, ...rest } = m; return rest; });
+          setSaveState(id, null);
+          delete saveQueue.current[id];
           cancelDeleteSticky(id);
           if (file) bumpStoredBytes(file.canvas_id, -file.size);
         } catch (err) {
@@ -3308,7 +3642,17 @@
         if (rectsOverlap(cardRect, fileRect)) continue;
         const a = borderPoint(cardRect, fileRect.x + fileRect.w / 2, fileRect.y + fileRect.h / 2);
         const b = borderPoint(fileRect, cardRect.x + cardRect.w / 2, cardRect.y + cardRect.h / 2);
-        edges.push(html`<line key=${'tether-' + f.id} class=${'tether' + (activePath.has(node.id) ? ' onpath' : '')} style=${{ stroke: 'var(--muted)' }} x1=${a.x} y1=${a.y} x2=${b.x} y2=${b.y} />`);
+        const scoped = modeOf(f) === 'branch';
+        edges.push(html`<line key=${'tether-' + f.id} class=${'tether' + (scoped ? ' branch' : '') + (activePath.has(node.id) ? ' onpath' : '')} style=${{ stroke: scoped ? `var(--branch-${colours.get(node.id)})` : 'var(--muted)' }} x1=${a.x} y1=${a.y} x2=${b.x} y2=${b.y} />`);
+      }
+      // The connector being dragged from an attach handle.
+      if (linking) {
+        const item = (linking.kind === 'file' ? placedFiles.map((p) => ({ item: p.f, x: p.x, y: p.y })) : placedStickies.map((p) => ({ item: p.st, x: p.x, y: p.y }))).find((p) => p.item.id === linking.id);
+        if (item) {
+          const rect = { x: item.x, y: item.y, w: linking.kind === 'file' ? FILE_W : STICKY_W, h: stickyHeights[linking.id] || (linking.kind === 'file' ? FILE_H : 120) };
+          const from = borderPoint(rect, linking.x, linking.y);
+          edges.push(html`<line key="link-draft" class="link-draft" x1=${from.x} y1=${from.y} x2=${linking.x} y2=${linking.y} />`);
+        }
       }
       for (const { st, x, y } of placedStickies) {
         const node = st.node_id ? byId.get(st.node_id) : null;
@@ -3318,7 +3662,8 @@
         if (rectsOverlap(cardRect, noteRect)) continue;
         const a = borderPoint(cardRect, noteRect.x + noteRect.w / 2, noteRect.y + noteRect.h / 2);
         const b = borderPoint(noteRect, cardRect.x + cardRect.w / 2, cardRect.y + cardRect.h / 2);
-        edges.push(html`<line key=${'tether-' + st.id} class=${'tether' + (activePath.has(node.id) ? ' onpath' : '')} style=${{ stroke: STICKY_LINE[st.color] || STICKY_LINE.yellow }} x1=${a.x} y1=${a.y} x2=${b.x} y2=${b.y} />`);
+        const scoped = modeOf(st) === 'branch';
+        edges.push(html`<line key=${'tether-' + st.id} class=${'tether' + (scoped ? ' branch' : '') + (activePath.has(node.id) ? ' onpath' : '')} style=${{ stroke: scoped ? `var(--branch-${colours.get(node.id)})` : (STICKY_LINE[st.color] || STICKY_LINE.yellow) }} x1=${a.x} y1=${a.y} x2=${b.x} y2=${b.y} />`);
       }
 
       // The node being written: a dashed outline where it will land, joined to its parent.
@@ -3326,7 +3671,82 @@
       const isEmpty = ready && doc.nodes.length === 0;
       const composerParent = composer && composer.parentId ? byId.get(composer.parentId) : null;
       const readerNode = readerId ? byId.get(readerId) : null;
-      const pinnedCount = doc.stickies.filter((st) => st.in_context).length;
+      const contextCount = doc.stickies.filter((st) => modeOf(st) !== 'off').length + doc.files.filter((f) => modeOf(f) !== 'off').length;
+
+      // Context chips: what each node can see. Its own branch items first, then
+      // each ancestor's (nearest first), then everything on the whole canvas.
+      const accentOf = (nodeId) => `var(--branch-${colours.get(nodeId)})`;
+      const chipOf = (kind, item) => ({ kind, id: item.id, label: kind === 'file' ? item.name : snippet(firstLine(item.content), 40) });
+      const usable = [
+        ...doc.stickies.filter((st) => (st.content || '').trim()).map((st) => ({ kind: 'sticky', item: st })),
+        ...doc.files.map((f) => ({ kind: 'file', item: f })),
+      ];
+      const canvasChips = usable.filter(({ item }) => modeOf(item) === 'canvas').map(({ kind, item }) => ({ ...chipOf(kind, item), scope: 'canvas' }));
+      const branchItems = new Map(); // node id -> [{ kind, item }]
+      for (const entry of usable) {
+        if (modeOf(entry.item) !== 'branch' || !byId.has(entry.item.node_id)) continue;
+        if (!branchItems.has(entry.item.node_id)) branchItems.set(entry.item.node_id, []);
+        branchItems.get(entry.item.node_id).push(entry);
+      }
+      const chipsFor = (node) => {
+        if (canvasChips.length === 0 && branchItems.size === 0) return null;
+        const chips = [];
+        const seen = new Set();
+        for (let n = node; n && !seen.has(n.id); n = n.parent_id ? byId.get(n.parent_id) : null) {
+          seen.add(n.id);
+          for (const { kind, item } of branchItems.get(n.id) || []) {
+            chips.push({ ...chipOf(kind, item), scope: 'branch', own: n.id === node.id, from: snippet(n.prompt, 40), accent: accentOf(n.id) });
+          }
+        }
+        return [...chips, ...canvasChips];
+      };
+
+      // Jump to a bubble or a node: open any collapsed ancestor, then centre on it.
+      const uncollapseAbove = (nodeId, inclusive) => {
+        let changed = false;
+        const next = new Set(collapsed);
+        const seen = new Set();
+        let n = byId.get(nodeId);
+        if (n && !inclusive) n = n.parent_id ? byId.get(n.parent_id) : null;
+        for (; n && !seen.has(n.id); n = n.parent_id ? byId.get(n.parent_id) : null) {
+          seen.add(n.id);
+          if (next.delete(n.id)) changed = true;
+        }
+        if (changed) { setCollapsed(next); if (doc.canvas) saveCollapsed(doc.canvas.id, next); }
+      };
+      const showBubble = (kind, id) => {
+        const item = findBubble(kind, id);
+        if (!item) return;
+        if (item.node_id) uncollapseAbove(item.node_id, false);
+        const pos = stickyPosition(item, byId);
+        const w = kind === 'file' ? FILE_W : STICKY_W;
+        centreOn({ x: pos.x + w / 2, y: pos.y + (stickyHeights[id] || (kind === 'file' ? FILE_H : 120)) / 2 });
+      };
+      const showNode = (id) => {
+        const node = byId.get(id);
+        if (!node) return;
+        uncollapseAbove(id, false);
+        setSelectedId(id);
+        centreOn({ x: node.x + CARD_W / 2, y: node.y + (heights[id] || 200) / 2 });
+      };
+
+      // Everything a bubble needs for its context control, menu and attach handle.
+      const bubbleCtx = (item) => {
+        const node = item.node_id ? byId.get(item.node_id) : null;
+        return {
+          menuOpen: menuFor === item.id,
+          isLinking: !!linking && linking.id === item.id,
+          nodeTitle: node ? snippet(node.prompt, 40) : '',
+          accent: node ? accentOf(node.id) : null,
+          onToggleMenu: toggleMenu,
+          onMode: setContextMode,
+          onAttachPick: startAttachPick,
+          onDetach: detachBubble,
+          onLinkStart, onLinkMove, onLinkEnd,
+        };
+      };
+      const pickItem = attachPick ? findBubble(attachPick.kind, attachPick.id) : null;
+      const pickName = pickItem ? (attachPick.kind === 'file' ? pickItem.name : snippet(firstLine(pickItem.content) || 'this note', 40)) : '';
       const showGhost = composer && composer.x !== null && !isEmpty;
       if (showGhost && composerParent && heights[composerParent.id] !== undefined) {
         edges.push(html`<path key="draft" class="draft" d=${curve(composerParent.x + CARD_W / 2, composerParent.y + heights[composerParent.id], composer.x + CARD_W / 2, composer.y)} />`);
@@ -3388,8 +3808,8 @@
             class=${contextOpen ? 'on' : ''}
             onClick=${toggleContext}
             disabled=${!ready}
-            title="Instructions and pinned notes the AI gets with every prompt on this canvas"
-          >Context${pinnedCount > 0 ? ` · ${pinnedCount}` : ''}</button>
+            title="Instructions, and the notes and files given to the AI on this canvas"
+          >Context${contextCount > 0 ? ` · ${contextCount}` : ''}</button>
           ${stickyAdd.busy && html`<${Spinner} label="Adding sticky…" />`}
           ${stickyAdd.error && html`
             <span class="inline-status bad">
@@ -3438,12 +3858,14 @@
           onDragOver=${onFileDragOver}
           onDragLeave=${onFileDragLeave}
           onDrop=${onFileDrop}
+          onPointerDownCapture=${onPickDown}
+          onClickCapture=${onPickClick}
           onPointerDown=${onPointerDown}
           onPointerMove=${onPointerMove}
           onPointerUp=${onPointerUp}
           onPointerCancel=${onPointerUp}
         >
-          <div class=${'world' + (activePath.size > 0 ? ' has-path' : '')} style=${{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}>
+          <div class=${'world' + (activePath.size > 0 ? ' has-path' : '') + (attachPick ? ' picking' : '')} style=${{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}>
             <svg class="edges" width="1" height="1">${edges}</svg>
             ${visibleNodes.map((n) => html`
               <${Card}
@@ -3459,7 +3881,9 @@
                 onExpand=${onExpand}
                 onAddSticky=${addSticky}
                 isTarget=${!!composer && composer.parentId === n.id}
-                isDrop=${!!dropping && dropping.nodeId === n.id}
+                isDrop=${(!!dropping && dropping.nodeId === n.id) || (!!linking && linking.nodeId === n.id)}
+                chips=${chipsFor(n)}
+                onChip=${showBubble}
                 pendingSince=${n.status === 'pending' ? (pendingSince.current[n.id] || Date.parse(n.updated_at)) : null}
                 pollError=${pollErrors[n.id]}
                 retry=${retries[n.id]}
@@ -3497,7 +3921,7 @@
                 onCancelDelete=${cancelDeleteSticky}
                 onDelete=${deleteSticky}
                 onRetrySave=${retryStickySave}
-                onPin=${onStickyPin}
+                ctx=${bubbleCtx(st)}
               />`)}
             ${placedFiles.map(({ f, x, y }) => html`
               <${FileBubble}
@@ -3508,7 +3932,7 @@
                 isDragging=${draggingFile === f.id}
                 isReading=${fileReaderId === f.id}
                 onPath=${!!f.node_id && activePath.has(f.node_id)}
-                save=${fileSaves[f.id]}
+                save=${stickySaves[f.id]}
                 removal=${removals[f.id]}
                 onHeight=${onStickyHeight}
                 onDragStart=${onFileDragStart}
@@ -3517,14 +3941,17 @@
                 onAskDelete=${askDeleteSticky}
                 onCancelDelete=${cancelDeleteSticky}
                 onDelete=${deleteFile}
-                onRetrySave=${retryFileSave}
+                onRetrySave=${retryStickySave}
+                ctx=${bubbleCtx(f)}
               />`)}
             ${placedUploads.map(({ u, x, y }) => html`
               <${UploadBubble} key=${'upload-' + u.key} upload=${u} x=${x} y=${y} onRetry=${retryUpload} onDismiss=${dismissUpload} />`)}
             ${showGhost && html`<div class="ghost" style=${{ left: composer.x + 'px', top: composer.y + 'px' }}>New node</div>`}
           </div>
           ${overlay && html`<div class="overlay">${overlay}</div>`}
-          ${ready && toast}
+          ${ready && (attachPick
+            ? html`<div class="toast"><span class="msg">Click a card to attach “${pickName}” to it</span><button onClick=${() => setAttachPick(null)}>Cancel</button></div>`
+            : toast)}
           ${ready && dropping && html`
             <div class="drop-hint">${dropNode ? `Drop to attach to “${snippet(dropNode.prompt, 40)}”` : 'Drop to add files here'}</div>`}
           ${ready && miniBlocks.length > 0 && vpSize.w > 0 && html`
@@ -3544,12 +3971,13 @@
               key=${doc.canvas.id}
               canvas=${doc.canvas}
               stickies=${doc.stickies}
+              files=${doc.files}
+              nodes=${doc.nodes}
+              colours=${colours}
               onSaveInstructions=${saveInstructions}
-              onUnpin=${onStickyPin}
-              onShowSticky=${(st) => {
-                const pos = stickyPosition(st, byId);
-                centreOn({ x: pos.x + STICKY_W / 2, y: pos.y + (stickyHeights[st.id] || 120) / 2 });
-              }}
+              onSetMode=${setContextMode}
+              onShowBubble=${showBubble}
+              onShowNode=${showNode}
               onClose=${() => setContextOpen(false)}
             />`}
           ${ready && readerFile && html`

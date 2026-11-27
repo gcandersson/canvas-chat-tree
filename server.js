@@ -133,6 +133,14 @@ const SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS files_canvas_id_idx ON files(canvas_id);
   CREATE INDEX IF NOT EXISTS files_node_id_idx ON files(node_id);
+
+  -- One context model for stickies and files: context_mode is off, branch or
+  -- canvas, and is the source of truth. in_context is still written, as
+  -- (context_mode = 'canvas'), for backwards compatibility. The UPDATE carries
+  -- stickies pinned before context_mode existed over to 'canvas'; it changes
+  -- nothing once that is done, so it is safe on every start.
+  ALTER TABLE stickies ADD COLUMN IF NOT EXISTS context_mode text NOT NULL DEFAULT 'off';
+  UPDATE stickies SET context_mode = 'canvas' WHERE in_context = true AND context_mode = 'off';
 `;
 
 let schemaReady = false;
@@ -811,8 +819,9 @@ app.patch('/api/stickies/:id', async (req, res) => {
   const id = requireUuid(req.params.id, 'Sticky id');
   const body = req.body || {};
 
-  const existing = await pool.query('SELECT canvas_id FROM stickies WHERE id = $1', [id]);
+  const existing = await pool.query('SELECT canvas_id, node_id, context_mode FROM stickies WHERE id = $1', [id]);
   if (existing.rowCount === 0) throw new HttpError(404, 'Sticky not found.');
+  const current = existing.rows[0];
 
   const sets = [];
   const values = [id];
@@ -822,14 +831,29 @@ app.patch('/api/stickies/:id', async (req, res) => {
   if (body.color !== undefined) set('color', readStickyColor(body.color));
   if (body.x !== undefined) set('x', readCoord(body.x, 'x', { required: true }));
   if (body.y !== undefined) set('y', readCoord(body.y, 'y', { required: true }));
-  if (body.in_context !== undefined) {
-    if (typeof body.in_context !== 'boolean') throw new HttpError(400, 'in_context must be true or false.');
-    set('in_context', body.in_context);
-  }
+  let nodeId = current.node_id;
   if (body.node_id !== undefined) {
-    const nodeId = body.node_id === null ? null : requireUuid(body.node_id, 'node_id');
-    if (nodeId) await requireNodeOnCanvas(nodeId, existing.rows[0].canvas_id);
+    nodeId = body.node_id === null ? null : requireUuid(body.node_id, 'node_id');
+    if (nodeId) await requireNodeOnCanvas(nodeId, current.canvas_id);
     set('node_id', nodeId);
+  }
+  // context_mode is the source of truth. The older in_context flag is still
+  // accepted (true = canvas, false = off) and is always written to match.
+  let mode;
+  if (body.context_mode !== undefined) {
+    if (!CONTEXT_MODES.includes(body.context_mode)) {
+      throw new HttpError(400, `context_mode must be one of: ${CONTEXT_MODES.join(', ')}.`);
+    }
+    mode = body.context_mode;
+  } else if (body.in_context !== undefined) {
+    if (typeof body.in_context !== 'boolean') throw new HttpError(400, 'in_context must be true or false.');
+    mode = body.in_context ? 'canvas' : 'off';
+  }
+  if (mode === 'branch' && !nodeId) throw new HttpError(400, 'context_mode "branch" needs the sticky to be attached to a node.');
+  if (mode === undefined && current.context_mode === 'branch' && !nodeId) mode = 'off'; // detached: no branch left to scope to
+  if (mode !== undefined) {
+    set('context_mode', mode);
+    set('in_context', mode === 'canvas');
   }
   if (sets.length === 0) throw new HttpError(400, 'Nothing to update.');
 
