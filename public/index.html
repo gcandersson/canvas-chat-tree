@@ -101,6 +101,7 @@
       --file-word: #2f6fd6;
       --file-other: #8a8f9c;
       --file-on: #ffffff;
+      --file-link: #7a5cd6;
     }
 
     /* Light theme: neutral greys and white, no warm tones. */
@@ -552,6 +553,9 @@
     .file-icon.k-image { background: var(--file-image); }
     .file-icon.k-text { background: var(--file-text); }
     .file-icon.k-word { background: var(--file-word); }
+    .file-icon.k-link { background: var(--file-link); }
+    .link-url { margin: 0 0 6px; overflow-wrap: anywhere; }
+    .link-url a { color: var(--accent); }
     .file-icon.big { min-width: 56px; height: 34px; font-size: 15px; border-radius: 6px; }
     .filebub-preview {
       height: 110px;
@@ -984,6 +988,8 @@
       white-space: nowrap;
     }
     .toast.bad { border-color: var(--error); }
+    .toast.bad { white-space: normal; max-width: min(640px, calc(100% - 32px)); }
+    .toast.bad .msg { overflow: visible; overflow-wrap: anywhere; }
     .toast .msg { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
     .toast .msg.bad { color: var(--error); }
     .toast .count { color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -1087,6 +1093,11 @@
     const FILE_KINDS = { pdf: 'pdf', png: 'image', jpg: 'image', jpeg: 'image', webp: 'image', gif: 'image', txt: 'text', md: 'text', csv: 'text', docx: 'word' };
     const FILE_ACCEPT = Object.keys(FILE_KINDS).map((ext) => '.' + ext).join(',');
     const ACCEPTED_LABEL = 'PDF, PNG, JPG, WEBP, GIF, TXT, MD, CSV and DOCX';
+    const linkHost = (url) => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; } };
+    const linkLabel = (link) => link.title || linkHost(link.url);
+    const shortDate = (iso) => (iso ? new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '');
+    const looksLikeUrl = (text) => /^https?:\/\/\S+$/i.test(text);
+    const MAX_STICKY_CHARS = 10000; // same limit as the server; longer pasted text becomes a text file
     const KIND_LABEL = { pdf: 'PDF document', image: 'Image', text: 'Text file', word: 'Word document', other: 'File' };
     const fileExt = (name) => (name.includes('.') ? name.split('.').pop().toLowerCase() : '');
     const fileKind = (name) => FILE_KINDS[fileExt(name)] || 'other';
@@ -1283,7 +1294,7 @@
                   key=${c.kind + c.id}
                   class=${'chip ' + c.scope}
                   style=${c.scope === 'branch' ? { '--chip': c.accent } : null}
-                  title=${`${c.kind === 'file' ? 'File' : 'Note'}: ${c.label} · ${c.scope === 'canvas' ? 'whole canvas' : c.own ? 'attached to this node' : `attached to “${c.from}”`}. Click to show it.`}
+                  title=${`${c.kind === 'file' ? 'File' : c.kind === 'link' ? 'Link' : 'Note'}: ${c.label} · ${c.scope === 'canvas' ? 'whole canvas' : c.own ? 'attached to this node' : `attached to “${c.from}”`}. Click to show it.`}
                   onClick=${() => onChip(c.kind, c.id)}
                 ><${ModeIcon} mode=${c.scope} /><span class="chip-text">${c.label}</span></button>`)}
               ${chips.length > 3 && html`<span class="chip more" title=${chips.slice(3).map((c) => c.label).join('\n')}>+${chips.length - 3}</span>`}
@@ -1539,7 +1550,8 @@
     // --- File bubbles -------------------------------------------------------
 
     // The coloured type badge: PDF, IMG, DOC, or the ending of a text file.
-    function FileIcon({ name, big }) {
+    function FileIcon({ name, big, link }) {
+      if (link) return html`<span class=${'file-icon k-link' + (big ? ' big' : '')} aria-hidden="true">LINK</span>`;
       const kind = fileKind(name);
       const label = kind === 'pdf' ? 'PDF' : kind === 'image' ? 'IMG' : kind === 'word' ? 'DOC' : kind === 'text' ? fileExt(name).toUpperCase() : 'FILE';
       return html`<span class=${'file-icon k-' + kind + (big ? ' big' : '')} aria-hidden="true">${label}</span>`;
@@ -1557,18 +1569,29 @@
       }
       return fileTextCache.get(key);
     }
-    function useFileText(id, limit, enabled) {
+    // A link's text changes when the page is fetched again, so fetched_at is part of the key.
+    function loadLinkText(link, limit) {
+      const key = `link:${link.id}:${limit}:${link.fetched_at || ''}`;
+      if (!fileTextCache.has(key)) {
+        const request = api(`/api/links/${link.id}/text?limit=${limit}`);
+        request.catch(() => fileTextCache.delete(key));
+        fileTextCache.set(key, request);
+      }
+      return fileTextCache.get(key);
+    }
+    function useFileText(id, limit, enabled, link) {
       const [state, setState] = useState({ status: enabled ? 'loading' : 'idle', data: null, error: null });
       const [attempt, setAttempt] = useState(0);
+      const version = link ? link.fetched_at : null;
       useEffect(() => {
         if (!enabled) { setState({ status: 'idle', data: null, error: null }); return undefined; }
         let current = true;
         setState({ status: 'loading', data: null, error: null });
-        loadFileText(id, limit).then(
+        (link ? loadLinkText(link, limit) : loadFileText(id, limit)).then(
           (data) => { if (current) setState({ status: 'ready', data, error: null }); },
           (err) => { if (current) setState({ status: 'error', data: null, error: err.message }); });
         return () => { current = false; };
-      }, [id, limit, enabled, attempt]);
+      }, [id, limit, enabled, attempt, version]);
       return { ...state, retry: () => setAttempt((a) => a + 1) };
     }
 
@@ -1653,6 +1676,128 @@
           <div class="filebub-bar" onPointerDown=${stop}>${bar}</div>
           <${BubbleExtras} kind="file" item=${file} ctx=${ctx} />
         </div>`;
+    }
+
+    // A web page saved on the canvas. Click to read its text in the reader
+    // panel, drag to move. Shows the fetch in progress, and a failed fetch with Retry.
+    function LinkBubble({ link, x, y, isDragging, isReading, onPath, save, removal, onHeight, onDragStart, onDragMove, onDragEnd, onAskDelete, onCancelDelete, onDelete, onRetrySave, onRefresh, ctx }) {
+      const ref = useRef(null);
+      const hasText = link.status !== 'processing' && link.text_chars > 0;
+      const preview = useFileText(link.id, 280, hasText, link);
+
+      useLayoutEffect(() => {
+        const el = ref.current;
+        const report = () => onHeight(link.id, el.offsetHeight);
+        report();
+        const ro = new ResizeObserver(report);
+        ro.observe(el);
+        return () => ro.disconnect();
+      }, [link.id, onHeight]);
+
+      const stop = (e) => e.stopPropagation();
+      const inBar = (e) => e.target.closest('.filebub-bar, .bubble-menu, .attach-handle');
+      const processing = link.status === 'processing';
+
+      let inner;
+      if (processing) {
+        inner = html`<${Spinner} label="Fetching page…" since=${Date.parse(link.updated_at)} />`;
+      } else if (link.status === 'error' && !hasText) {
+        inner = html`<div class="stack"><span class="err">${link.error || 'The page could not be fetched.'}</span></div>`;
+      } else if (hasText && preview.status === 'ready' && preview.data.text.trim()) {
+        inner = html`<div class="lines">${preview.data.text}</div>`;
+      } else if (hasText && preview.status === 'loading') {
+        inner = html`<${Spinner} label="Loading preview…" />`;
+      } else {
+        inner = html`<div class="stack"><${FileIcon} link=${true} big=${true} /><span>${hasText ? 'Preview failed' : 'No readable text found'}</span></div>`;
+      }
+
+      let bar;
+      if (removal) {
+        bar = removal.busy
+          ? html`<${Spinner} label="Deleting…" />`
+          : html`
+              <span class=${'state' + (removal.error ? ' bad' : '')} title=${removal.error || ''}>${removal.error ? 'Could not delete.' : 'Delete this link?'}</span>
+              <button onClick=${() => onDelete(link.id)}>${removal.error ? 'Retry' : 'Delete'}</button>
+              <button onClick=${() => onCancelDelete(link.id)}>Cancel</button>`;
+      } else {
+        const failedSave = save && save.state === 'failed';
+        const state = failedSave ? html`<span class="state bad" title=${save.error}>Not saved</span>`
+          : link.status === 'error' ? html`<span class="state bad" title=${link.error}>${hasText ? 'Refresh failed' : 'Fetch failed'}</span>`
+          : html`<span class="state" title=${link.url}>${linkHost(link.url)}${link.fetched_at ? ` · ${shortDate(link.fetched_at)}` : ''}</span>`;
+        bar = html`
+          ${state}
+          ${failedSave
+            ? html`<button onClick=${() => onRetrySave(link.id)}>Retry</button>`
+            : html`<button disabled=${processing} onClick=${() => onRefresh(link.id)} title="Fetch the page again">${link.status === 'error' ? 'Retry' : 'Refresh'}</button>`}
+          <${ContextButton} kind="link" item=${link} ctx=${ctx} className="" />
+          <button class="x" title="Delete this link" aria-label="Delete this link" onClick=${() => onAskDelete(link.id)}>×</button>`;
+      }
+
+      return html`
+        <div
+          class=${'filebub link' + (isDragging ? ' dragging' : '') + (isReading ? ' reading' : '') + (onPath ? ' onpath' : '') + (link.status === 'error' ? ' bad' : '') + (ctx.menuOpen ? ' menu-open' : '')}
+          ref=${ref}
+          data-link=${link.id}
+          style=${{ left: x + 'px', top: y + 'px' }}
+          title=${link.status === 'error' && link.error ? link.error : 'Click to read · drag to move'}
+          onPointerDown=${(e) => { if (!inBar(e)) onDragStart(e, link); }}
+          onPointerMove=${onDragMove}
+          onPointerUp=${onDragEnd}
+          onPointerCancel=${onDragEnd}
+        >
+          <div class="filebub-head">
+            <${FileIcon} link=${true} />
+            <span class="filebub-name" title=${link.title || link.url}>${linkLabel(link)}</span>
+          </div>
+          <div class="filebub-preview">${inner}</div>
+          <div class="filebub-bar" onPointerDown=${stop}>${bar}</div>
+          <${BubbleExtras} kind="link" item=${link} ctx=${ctx} />
+        </div>`;
+    }
+
+    // A link open in the reader panel: the page's readable text, with Refresh.
+    function LinkViewer({ link, onRefresh, onClose }) {
+      const hasText = link.status !== 'processing' && link.text_chars > 0;
+      const text = useFileText(link.id, 20000, hasText, link);
+      const processing = link.status === 'processing';
+
+      let body;
+      if (processing) {
+        body = html`<div class="reader-foot"><${Spinner} label="Fetching page…" since=${Date.parse(link.updated_at)} /></div>`;
+      } else if (!hasText) {
+        body = link.status === 'error'
+          ? html`<div class="reader-error">${link.error || 'The page could not be fetched.'}</div>
+                 <div class="reader-foot"><button class="primary" onClick=${() => onRefresh(link.id)}>Retry</button></div>`
+          : html`<div class="ctx-empty">No readable text was found on this page.</div>`;
+      } else if (text.status === 'loading' || text.status === 'idle') {
+        body = html`<div class="reader-foot"><${Spinner} label="Loading text…" /></div>`;
+      } else if (text.status === 'error') {
+        body = html`
+          <div class="reader-error">Could not load the text: ${text.error}</div>
+          <div class="reader-foot"><button class="primary" onClick=${text.retry}>Retry</button></div>`;
+      } else {
+        body = html`
+          ${link.status === 'error' && html`<div class="reader-error">The last refresh failed (${link.error}). This is the text fetched before.</div>`}
+          ${text.data.total >= 20000 && html`<p class="file-note">Only the first 20,000 characters of the page's text are kept.</p>`}
+          <div class="file-text prose">${text.data.text}</div>`;
+      }
+
+      return html`
+        <aside class="reader file" aria-label="Link in the reader panel">
+          <div class="reader-bar">
+            <${FileIcon} link=${true} />
+            <span class="file-title" title=${link.title || link.url}>${linkLabel(link)}</span>
+            <span class="spacer"></span>
+            <button disabled=${processing} onClick=${() => onRefresh(link.id)} title="Fetch the page again">Refresh</button>
+            <a class="btn" href=${link.url} target="_blank" rel="noopener noreferrer" title="Open the page in a new tab">Open page</a>
+            <button class="close" onClick=${onClose} aria-label="Close reader" title="Close (Esc)">×</button>
+          </div>
+          <div class="reader-scroll scroll">
+            <p class="link-url"><a href=${link.url} target="_blank" rel="noopener noreferrer">${link.url}</a></p>
+            <p class="file-note">${link.fetched_at ? `Fetched ${shortDate(link.fetched_at)} · ${link.text_chars.toLocaleString('en-GB')} characters of readable text` : 'Not fetched yet'}</p>
+            ${body}
+          </div>
+        </aside>`;
     }
 
     // A file on its way to the server: progress bar with percentage, then
@@ -1833,8 +1978,8 @@
           ${data.items.map((item) => html`
             <div key=${item.type + item.id}>
               <div class=${'ctx-note' + (item.included ? '' : ' out')}>
-                ${item.type === 'file' ? html`<${FileIcon} name=${item.name} />` : html`<span class="glyph"><${NoteIcon} /></span>`}
-                <button class="line" onClick=${() => onShow(item.type === 'file' ? 'file' : 'sticky', item.id)} title="Show it on the canvas">${item.name}</button>
+                ${item.type === 'file' ? html`<${FileIcon} name=${item.name} />` : item.type === 'link' ? html`<${FileIcon} link=${true} />` : html`<span class="glyph"><${NoteIcon} /></span>`}
+                <button class="line" onClick=${() => onShow(item.type === 'note' ? 'sticky' : item.type, item.id)} title="Show it on the canvas">${item.name}</button>
                 <span class="tag" title=${item.scope === 'canvas' ? 'Set to Whole canvas' : `Attached to “${item.node_title}” with This branch`}>${item.scope === 'canvas' ? 'whole canvas' : item.node_id === node.id ? 'this node' : `from “${snippet(item.node_title || '', 18)}”`}</span>
                 <span class=${'tag ' + (item.included ? 'ok' : 'bad')}>${item.included ? 'included' : 'left out'}</span>
               </div>
@@ -1919,7 +2064,7 @@
 
     // Side panel: what the AI gets with every prompt on this canvas.
     // Mounted once per canvas (it is keyed by canvas id).
-    function ContextPanel({ canvas, stickies, files, nodes, colours, onSaveInstructions, onSetMode, onShowBubble, onShowNode, onClose }) {
+    function ContextPanel({ canvas, stickies, files, links, nodes, colours, onSaveInstructions, onSetMode, onShowBubble, onShowNode, onClose }) {
       const [draft, setDraft] = useState(canvas.instructions || '');
       const [save, setSave] = useState({ state: 'idle', error: null }); // idle | saving | saved | failed
       const draftRef = useRef(draft);
@@ -1956,7 +2101,8 @@
 
       const pinned = stickies.filter((st) => modeOf(st) === 'canvas');
       const canvasFiles = files.filter((f) => modeOf(f) === 'canvas');
-      const canvasCount = pinned.length + canvasFiles.length;
+      const canvasLinks = links.filter((l) => modeOf(l) === 'canvas');
+      const canvasCount = pinned.length + canvasFiles.length + canvasLinks.length;
 
       // Branch context, grouped by the node each item is attached to (nodes in creation order).
       const groups = [];
@@ -1964,6 +2110,7 @@
         const items = [
           ...stickies.filter((st) => st.node_id === node.id && modeOf(st) === 'branch').map((st) => ({ kind: 'sticky', item: st })),
           ...files.filter((f) => f.node_id === node.id && modeOf(f) === 'branch').map((f) => ({ kind: 'file', item: f })),
+          ...links.filter((l) => l.node_id === node.id && modeOf(l) === 'branch').map((l) => ({ kind: 'link', item: l })),
         ];
         if (items.length > 0) groups.push({ node, items });
       }
@@ -1975,8 +2122,8 @@
           <div key=${kind + item.id} class=${'ctx-note' + (empty ? ' out' : '')}>
             ${kind === 'sticky'
               ? html`<span class="swatch" style=${{ '--dot': STICKY_LINE[item.color] || STICKY_LINE.yellow }}></span>`
-              : html`<${FileIcon} name=${item.name} />`}
-            <button class="line" onClick=${() => onShowBubble(kind, item.id)} title="Show it on the canvas">${kind === 'file' ? item.name : empty ? '(empty note)' : firstLine(item.content)}</button>
+              : html`<${FileIcon} name=${item.name || ''} link=${kind === 'link'} />`}
+            <button class="line" onClick=${() => onShowBubble(kind, item.id)} title="Show it on the canvas">${kind === 'file' ? item.name : kind === 'link' ? linkLabel(item) : empty ? '(empty note)' : firstLine(item.content)}</button>
             ${empty && html`<span class="tag">empty, not sent</span>`}
             <button class="unpin" onClick=${() => onSetMode(kind, item.id, 'off')} title="Set its AI context to Off">Turn off</button>
           </div>`;
@@ -1998,7 +2145,7 @@
           </div>
           <div class="reader-scroll scroll">
             <p class="ctx-intro">What the AI is given on this canvas, besides the path to the node. Other canvases are not affected.</p>
-            <p class="ctx-intro">Each prompt can carry up to 40,000 characters of notes and text files, 3 PDFs (100 pages each) and 5 images. When there is more, the items closest to the node win and whole-canvas items go last. Open a node with Expand to see exactly what it gets.</p>
+            <p class="ctx-intro">Each prompt can carry up to 40,000 characters of notes, text files and link text, 3 PDFs (100 pages each) and 5 images. When there is more, the items closest to the node win and whole-canvas items go last. Open a node with Expand to see exactly what it gets.</p>
 
             <div class="reader-label">Instructions</div>
             <textarea
@@ -2018,6 +2165,7 @@
               <div class="ctx-empty">Nothing yet. Open the context control on a sticky or a file and choose “Whole canvas” to give it to every node on this canvas.</div>`}
             ${pinned.map((st) => row('sticky', st))}
             ${canvasFiles.map((f) => row('file', f))}
+            ${canvasLinks.map((l) => row('link', l))}
 
             <div class="reader-label ctx-section">
               Attached to branches
@@ -2353,7 +2501,7 @@
     function App() {
       const [list, setList] = useState({ status: 'loading', items: [], error: null });
       const [canvasId, setCanvasId] = useState(() => location.hash.slice(1) || null);
-      const [doc, setDoc] = useState({ status: 'idle', canvas: null, nodes: [], stickies: [], files: [], error: null });
+      const [doc, setDoc] = useState({ status: 'idle', canvas: null, nodes: [], stickies: [], files: [], links: [], error: null });
       const [view, setView] = useState({ x: 0, y: 0, k: 1 });
       const [heights, setHeights] = useState({});
       const [creating, setCreating] = useState({ busy: false, error: null, title: null });
@@ -2382,6 +2530,7 @@
       const [streamTick, setStreamTick] = useState(0);  // bumped when a node drops from streaming to polling
       const [fileReaderId, setFileReaderId] = useState(null);     // file shown in the reader panel
       const [uploads, setUploads] = useState([]);                 // files on their way to the server
+      const [capture, setCapture] = useState(null);               // null, or { busy, text } / { error, retry } for a link or pasted note being added
       const [menuFor, setMenuFor] = useState(null);               // id of the bubble whose menu is open
       const [linking, setLinking] = useState(null);               // { kind, id, x, y, nodeId } while a connector is dragged from an attach handle
       const [attachPick, setAttachPick] = useState(null);         // { kind, id } while "Attach to…" waits for a click on a card
@@ -2449,7 +2598,7 @@
 
       const loadCanvas = useCallback(async (id) => {
         const seq = ++loadSeq.current;
-        setDoc({ status: 'loading', canvas: null, nodes: [], stickies: [], files: [], error: null });
+        setDoc({ status: 'loading', canvas: null, nodes: [], stickies: [], files: [], links: [], error: null });
         setHeights({});
         setComposer(null);
         setRetries({});
@@ -2465,6 +2614,7 @@
         setMenuFor(null);
         setLinking(null);
         setAttachPick(null);
+        setCapture(null);
         setDropping(null);
         // Uploads still running belong to the canvas being left: stop them.
         for (const request of uploadRequests.current.values()) request.abort();
@@ -2484,10 +2634,10 @@
           if (seq !== loadSeq.current) return; // a newer load has started
           fitWhenMeasured.current = true;
           setCollapsed(loadCollapsed(id));
-          setDoc({ status: 'ready', canvas: data.canvas, nodes: data.nodes, stickies: data.stickies || [], files: data.files || [], error: null });
+          setDoc({ status: 'ready', canvas: data.canvas, nodes: data.nodes, stickies: data.stickies || [], files: data.files || [], links: data.links || [], error: null });
         } catch (err) {
           if (seq !== loadSeq.current) return;
-          setDoc({ status: 'error', canvas: null, nodes: [], stickies: [], files: [], error: err.message });
+          setDoc({ status: 'error', canvas: null, nodes: [], stickies: [], files: [], links: [], error: err.message });
         }
       }, []);
 
@@ -2497,7 +2647,7 @@
         if (list.status !== 'ready') return;
         if (!canvasId) {
           loadSeq.current++;
-          setDoc({ status: 'idle', canvas: null, nodes: [], stickies: [], files: [], error: null });
+          setDoc({ status: 'idle', canvas: null, nodes: [], stickies: [], files: [], links: [], error: null });
           setComposer(null);
           return;
         }
@@ -2531,9 +2681,10 @@
           .map((st) => ({ ...stickyPosition(st, byId), w: STICKY_W, h: stickyHeights[st.id] || 120 }));
         const fileRects = doc.files
           .filter((f) => !(f.node_id && hidden.has(f.node_id)))
-          .map((f) => ({ ...stickyPosition(f, byId), w: FILE_W, h: stickyHeights[f.id] || FILE_H }));
+          .map((f) => ({ ...stickyPosition(f, byId), w: FILE_W, h: stickyHeights[f.id] || FILE_H }))
+          .concat(doc.links.filter((l) => !(l.node_id && hidden.has(l.node_id))).map((l) => ({ ...stickyPosition(l, byId), w: FILE_W, h: stickyHeights[l.id] || FILE_H })));
         setView(fitView(shown, heights, rect.width, rect.height, [...stickyRects, ...fileRects]));
-      }, [doc.nodes, doc.stickies, doc.files, heights, stickyHeights, collapsed]);
+      }, [doc.nodes, doc.stickies, doc.files, doc.links, heights, stickyHeights, collapsed]);
 
       // Fit once after a canvas loads, as soon as every card has been measured.
       useEffect(() => {
@@ -3077,7 +3228,8 @@
           .map((st) => ({ ...stickyPosition(st, movedById), w: STICKY_W, h: stickyHeights[st.id] || 120 }));
         const fileRects = doc.files
           .filter((f) => !(f.node_id && hidden.has(f.node_id)))
-          .map((f) => ({ ...stickyPosition(f, movedById), w: FILE_W, h: stickyHeights[f.id] || FILE_H }));
+          .map((f) => ({ ...stickyPosition(f, movedById), w: FILE_W, h: stickyHeights[f.id] || FILE_H }))
+          .concat(doc.links.filter((l) => !(l.node_id && hidden.has(l.node_id))).map((l) => ({ ...stickyPosition(l, movedById), w: FILE_W, h: stickyHeights[l.id] || FILE_H })));
         return fitView(moved.filter((n) => !hidden.has(n.id)), heights, rect.width, rect.height, [...stickyRects, ...fileRects]);
       };
 
@@ -3179,7 +3331,7 @@
         clearTimeout(savedTimers.current[id]);
         setSaveState(id, { state: 'saving', error: null });
         try {
-          await api((q.kind === 'file' ? '/api/files/' : '/api/stickies/') + id, { method: 'PATCH', body: JSON.stringify(body) });
+          await api((q.kind === 'file' ? '/api/files/' : q.kind === 'link' ? '/api/links/' : '/api/stickies/') + id, { method: 'PATCH', body: JSON.stringify(body) });
           q.inFlight = false;
           if (q.queued) { const next = q.queued; q.queued = null; return saveSticky(id, next); }
           setSaveState(id, { state: 'saved', error: null });
@@ -3326,18 +3478,22 @@
 
       // -- Attach and scope: one context model for stickies and files -----------
 
-      const findBubble = (kind, id) => (kind === 'file' ? doc.files : doc.stickies).find((item) => item.id === id);
+      const updateLink = (id, patch) => {
+        setDoc((d) => ({ ...d, links: d.links.map((l) => (l.id === id ? { ...l, ...patch } : l)) }));
+      };
+      const findBubble = (kind, id) => (kind === 'file' ? doc.files : kind === 'link' ? doc.links : doc.stickies).find((item) => item.id === id);
+      const updateLocal = (kind, id, patch) => (kind === 'file' ? updateFile(id, patch) : kind === 'link' ? updateLink(id, patch) : updateSticky(id, patch));
       const changeBubble = (kind, id, patch) => {
-        if (kind === 'file') { updateFile(id, patch); saveFile(id, patch); }
-        else { updateSticky(id, patch); saveSticky(id, patch); }
+        updateLocal(kind, id, patch);
+        saveSticky(id, patch, kind);
       };
 
       // Off, This branch or Whole canvas. in_context is kept in step for stickies.
       const setContextMode = (kind, id, mode) => {
         const item = findBubble(kind, id);
         if (!item || (mode === 'branch' && !item.node_id)) return;
-        if (kind === 'file') { updateFile(id, { context_mode: mode }); saveFile(id, { context_mode: mode }); }
-        else { updateSticky(id, { context_mode: mode, in_context: mode === 'canvas' }); saveSticky(id, { context_mode: mode }); }
+        if (kind === 'sticky') { updateSticky(id, { context_mode: mode, in_context: mode === 'canvas' }); saveSticky(id, { context_mode: mode }); }
+        else changeBubble(kind, id, { context_mode: mode });
       };
 
       // Attaching and detaching change what x and y mean (offset from the card,
@@ -3499,7 +3655,7 @@
         const canvasId = doc.canvas.id;
         const node = place && place.nodeId ? doc.nodes.find((n) => n.id === place.nodeId) : null;
         let base;
-        if (node) {
+        if (node && place.x === undefined) {
           // Beside the card, past any stickies attached there, below files already attached.
           const taken = doc.files.filter((f) => f.node_id === node.id).length + uploads.filter((u) => u.nodeId === node.id).length;
           const hasStickies = doc.stickies.some((st) => st.node_id === node.id);
@@ -3511,7 +3667,8 @@
             { x: n.x, y: n.y, w: CARD_W, h: heights[n.id] || 200 }));
           base = blocked(right) && !blocked(left) ? left : right;
         } else if (place && place.x !== undefined) {
-          base = { x: Math.round(place.x - FILE_W / 2), y: Math.round(place.y - 24) };
+          // A point on the canvas; with a card as well (a paste), stored as the offset from that card.
+          base = { x: Math.round(place.x - FILE_W / 2 - (node ? node.x : 0)), y: Math.round(place.y - 24 - (node ? node.y : 0)) };
         } else {
           const rect = viewportRef.current.getBoundingClientRect();
           const v = viewRef.current;
@@ -3609,11 +3766,11 @@
       // which works for free files (canvas position) and attached ones (offset).
       // A press that does not move is a click and opens the file.
       const fileDrag = useRef(null);
-      const onFileDragStart = (e, file) => {
+      const onFileDragStart = (e, file, kind = 'file') => {
         if (e.button !== 0) return;
         try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
         fileDrag.current = {
-          id: file.id, pointerId: e.pointerId,
+          kind, id: file.id, pointerId: e.pointerId,
           startX: e.clientX, startY: e.clientY,
           origX: file.x, origY: file.y, x: file.x, y: file.y,
           moved: false,
@@ -3629,16 +3786,167 @@
         const k = viewRef.current.k;
         d.x = Math.round(d.origX + dx / k);
         d.y = Math.round(d.origY + dy / k);
-        updateFile(d.id, { x: d.x, y: d.y });
+        updateLocal(d.kind, d.id, { x: d.x, y: d.y });
       };
       const onFileDragEnd = (e) => {
         const d = fileDrag.current;
         if (!d || d.pointerId !== e.pointerId) return;
         fileDrag.current = null;
         setDraggingFile(null);
-        if (d.moved) saveFile(d.id, { x: d.x, y: d.y });
+        if (d.moved) saveSticky(d.id, { x: d.x, y: d.y }, d.kind);
         else if (e.type === 'pointerup') openFile(d.id);
       };
+      const onLinkDragStart = (e, link) => onFileDragStart(e, link, 'link');
+
+      // -- Link bubbles ---------------------------------------------------------
+
+      // Where a new bubble goes: a canvas point (the pointer, for a paste) or the
+      // centre of the screen; with a card to attach to, stored as an offset from it.
+      const lastPointer = useRef(null);
+      const placeFor = (width, lift) => {
+        const rect = viewportRef.current.getBoundingClientRect();
+        const v = viewRef.current;
+        const at = lastPointer.current;
+        const inside = at && at.x >= rect.left && at.x <= rect.right && at.y >= rect.top && at.y <= rect.bottom;
+        const cx = inside ? at.x - rect.left : rect.width / 2;
+        const cy = inside ? at.y - rect.top : rect.height / 2;
+        return { x: (cx - v.x) / v.k, y: (cy - v.y) / v.k, width, lift };
+      };
+      const resolvePlace = (place, nodeId) => {
+        const node = nodeId ? doc.nodes.find((n) => n.id === nodeId) : null;
+        return {
+          x: Math.round(place.x - place.width / 2 - (node ? node.x : 0)),
+          y: Math.round(place.y - place.lift - (node ? node.y : 0)),
+          nodeId: node ? node.id : null,
+        };
+      };
+      const centrePlace = (width, lift) => {
+        const rect = viewportRef.current.getBoundingClientRect();
+        const v = viewRef.current;
+        return { x: (rect.width / 2 - v.x) / v.k, y: (rect.height / 2 - v.y) / v.k, width, lift };
+      };
+
+      const addLink = async (url, place, nodeId) => {
+        if (!doc.canvas) return;
+        const canvasId = doc.canvas.id;
+        const pos = resolvePlace(place, nodeId);
+        setCapture({ busy: true, text: 'Saving link…' });
+        try {
+          const link = await api(`/api/canvases/${canvasId}/links`, {
+            method: 'POST',
+            body: JSON.stringify({ url, x: pos.x, y: pos.y, node_id: pos.nodeId }),
+          });
+          setDoc((d) => (d.canvas && d.canvas.id === canvasId ? { ...d, links: [...d.links, link] } : d));
+          setCapture(null);
+        } catch (err) {
+          setCapture({ error: `Could not save the link: ${err.message}`, retry: () => addLink(url, place, nodeId) });
+        }
+      };
+      const onAddLink = () => {
+        const url = window.prompt('Web address to save as a link', 'https://');
+        if (url === null || !url.trim() || url.trim() === 'https://') return;
+        addLink(url.trim(), centrePlace(FILE_W, FILE_H / 2), null);
+      };
+
+      const refreshLink = async (id) => {
+        updateLink(id, { status: 'processing', error: null, updated_at: new Date().toISOString() });
+        try {
+          const fresh = await api(`/api/links/${id}/refresh`, { method: 'POST' });
+          updateLink(id, { status: fresh.status, updated_at: fresh.updated_at });
+        } catch (err) {
+          updateLink(id, { status: 'error', error: `Could not start the refresh: ${err.message}` });
+        }
+      };
+
+      // While a page is being fetched, ask for the result every second.
+      const fetchingIds = doc.links.filter((l) => l.status === 'processing').map((l) => l.id).join(',');
+      useEffect(() => {
+        if (!fetchingIds) return undefined;
+        const busy = new Set();
+        const tick = () => {
+          for (const id of fetchingIds.split(',')) {
+            if (busy.has(id)) continue;
+            busy.add(id);
+            api('/api/links/' + id)
+              .then((fresh) => {
+                if (fresh.status === 'processing') return;
+                updateLink(id, { status: fresh.status, error: fresh.error, title: fresh.title, fetched_at: fresh.fetched_at, text_chars: fresh.text_chars, updated_at: fresh.updated_at });
+              })
+              .catch(() => { /* keep trying; the bubble still shows "Fetching page…" */ })
+              .finally(() => busy.delete(id));
+          }
+        };
+        const t = setInterval(tick, 1000);
+        return () => clearInterval(t);
+      }, [fetchingIds]);
+
+      const deleteLink = async (id) => {
+        setRemovals((m) => ({ ...m, [id]: { busy: true, error: null } }));
+        try {
+          await api('/api/links/' + id, { method: 'DELETE' });
+          setDoc((d) => ({ ...d, links: d.links.filter((l) => l.id !== id) }));
+          setFileReaderId((current) => (current === id ? null : current));
+          setSaveState(id, null);
+          delete saveQueue.current[id];
+          cancelDeleteSticky(id);
+        } catch (err) {
+          setRemovals((m) => ({ ...m, [id]: { busy: false, error: err.message } }));
+        }
+      };
+
+      // -- Quick capture: paste onto the canvas ---------------------------------
+      // Plain text becomes a sticky, a single web address a link bubble, an
+      // image an image file bubble. It lands at the pointer, attached to the
+      // selected card if there is one. Pasting into a text field is left alone.
+
+      const pasteSticky = async (content, place, nodeId) => {
+        const canvasId = doc.canvas.id;
+        const pos = resolvePlace(place, nodeId);
+        setCapture({ busy: true, text: 'Adding note…' });
+        try {
+          const sticky = await api(`/api/canvases/${canvasId}/stickies`, {
+            method: 'POST',
+            body: JSON.stringify({ node_id: pos.nodeId, x: pos.x, y: pos.y, content }),
+          });
+          setDoc((d) => (d.canvas && d.canvas.id === canvasId ? { ...d, stickies: [...d.stickies, sticky] } : d));
+          setCapture(null);
+        } catch (err) {
+          setCapture({ error: `Could not add the note: ${err.message}`, retry: () => pasteSticky(content, place, nodeId) });
+        }
+      };
+      const stamp = () => new Date().toTimeString().slice(0, 8).replace(/:/g, '');
+      useEffect(() => {
+        const onPaste = (e) => {
+          if (doc.status !== 'ready' || !doc.canvas) return;
+          const el = document.activeElement;
+          if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)) return;
+          const data = e.clipboardData;
+          if (!data) return;
+          const images = Array.from(data.files || []).filter((f) => f.type.startsWith('image/'));
+          const text = (data.getData('text/plain') || '').trim();
+          if (images.length === 0 && !text) return;
+          e.preventDefault();
+          const nodeId = selectedId && doc.nodes.some((n) => n.id === selectedId) ? selectedId : null;
+          if (images.length > 0) {
+            const at = placeFor(FILE_W, 24);
+            const named = images.map((f, i) => {
+              const ext = f.type === 'image/jpeg' ? 'jpg' : f.type.split('/')[1].replace(/[^a-z0-9]/gi, '');
+              return new File([f], `pasted-image-${stamp()}${i ? '-' + (i + 1) : ''}.${ext}`, { type: f.type });
+            });
+            addFiles(named, { x: at.x, y: at.y, nodeId });
+          } else if (looksLikeUrl(text)) {
+            addLink(text, placeFor(FILE_W, 24), nodeId);
+          } else if (text.length > MAX_STICKY_CHARS) {
+            // Too long for a sticky: keep all of it, as a text file.
+            const at = placeFor(FILE_W, 24);
+            addFiles([new File([text], `pasted-text-${stamp()}.txt`, { type: 'text/plain' })], { x: at.x, y: at.y, nodeId });
+          } else {
+            pasteSticky(text, placeFor(STICKY_W, 20), nodeId);
+          }
+        };
+        document.addEventListener('paste', onPaste);
+        return () => document.removeEventListener('paste', onPaste);
+      });
 
       // -- Render ------------------------------------------------------------
 
@@ -3681,7 +3989,11 @@
       const placedUploads = uploads
         .filter((u) => doc.canvas && u.canvasId === doc.canvas.id && !(u.nodeId && hidden.has(u.nodeId)))
         .map((u) => ({ u, ...stickyPosition({ node_id: u.nodeId, x: u.x, y: u.y }, byId) }));
+      const placedLinks = doc.links
+        .filter((l) => !(l.node_id && hidden.has(l.node_id)))
+        .map((l) => ({ l, ...stickyPosition(l, byId) }));
       const readerFile = fileReaderId ? doc.files.find((f) => f.id === fileReaderId) : null;
+      const readerLink = fileReaderId ? doc.links.find((l) => l.id === fileReaderId) : null;
       const storedBytes = doc.files.reduce((sum, f) => sum + f.size, 0);
       const dropNode = dropping && dropping.nodeId ? byId.get(dropping.nodeId) : null;
 
@@ -3690,9 +4002,10 @@
         ...visibleNodes.map((n) => ({ key: n.id, x: n.x, y: n.y, w: CARD_W, h: heights[n.id] || 200, fill: `var(--branch-${colours.get(n.id)})`, opacity: 0.9 })),
         ...placedStickies.map(({ st, x, y }) => ({ key: st.id, x, y, w: STICKY_W, h: stickyHeights[st.id] || 120, fill: STICKY_LINE[st.color] || STICKY_LINE.yellow, opacity: 0.75 })),
         ...placedFiles.map(({ f, x, y }) => ({ key: f.id, x, y, w: FILE_W, h: stickyHeights[f.id] || FILE_H, fill: 'var(--muted)', opacity: 0.75 })),
+        ...placedLinks.map(({ l, x, y }) => ({ key: l.id, x, y, w: FILE_W, h: stickyHeights[l.id] || FILE_H, fill: 'var(--file-link)', opacity: 0.75 })),
       ];
       // Attached files: the same short dashed connector as attached stickies.
-      for (const { f, x, y } of placedFiles) {
+      for (const { f, x, y } of [...placedFiles, ...placedLinks.map((p) => ({ f: p.l, x: p.x, y: p.y }))]) {
         const node = f.node_id ? byId.get(f.node_id) : null;
         if (!node || heights[node.id] === undefined) continue;
         const cardRect = { x: node.x, y: node.y, w: CARD_W, h: heights[node.id] };
@@ -3705,9 +4018,13 @@
       }
       // The connector being dragged from an attach handle.
       if (linking) {
-        const item = (linking.kind === 'file' ? placedFiles.map((p) => ({ item: p.f, x: p.x, y: p.y })) : placedStickies.map((p) => ({ item: p.st, x: p.x, y: p.y }))).find((p) => p.item.id === linking.id);
+        const item = [
+          ...placedFiles.map((p) => ({ item: p.f, x: p.x, y: p.y })),
+          ...placedLinks.map((p) => ({ item: p.l, x: p.x, y: p.y })),
+          ...placedStickies.map((p) => ({ item: p.st, x: p.x, y: p.y })),
+        ].find((p) => p.item.id === linking.id);
         if (item) {
-          const rect = { x: item.x, y: item.y, w: linking.kind === 'file' ? FILE_W : STICKY_W, h: stickyHeights[linking.id] || (linking.kind === 'file' ? FILE_H : 120) };
+          const rect = { x: item.x, y: item.y, w: linking.kind === 'sticky' ? STICKY_W : FILE_W, h: stickyHeights[linking.id] || (linking.kind === 'sticky' ? 120 : FILE_H) };
           const from = borderPoint(rect, linking.x, linking.y);
           edges.push(html`<line key="link-draft" class="link-draft" x1=${from.x} y1=${from.y} x2=${linking.x} y2=${linking.y} />`);
         }
@@ -3729,15 +4046,16 @@
       const isEmpty = ready && doc.nodes.length === 0;
       const composerParent = composer && composer.parentId ? byId.get(composer.parentId) : null;
       const readerNode = readerId ? byId.get(readerId) : null;
-      const contextCount = doc.stickies.filter((st) => modeOf(st) !== 'off').length + doc.files.filter((f) => modeOf(f) !== 'off').length;
+      const contextCount = doc.stickies.filter((st) => modeOf(st) !== 'off').length + doc.files.filter((f) => modeOf(f) !== 'off').length + doc.links.filter((l) => modeOf(l) !== 'off').length;
 
       // Context chips: what each node can see. Its own branch items first, then
       // each ancestor's (nearest first), then everything on the whole canvas.
       const accentOf = (nodeId) => `var(--branch-${colours.get(nodeId)})`;
-      const chipOf = (kind, item) => ({ kind, id: item.id, label: kind === 'file' ? item.name : snippet(firstLine(item.content), 40) });
+      const chipOf = (kind, item) => ({ kind, id: item.id, label: kind === 'file' ? item.name : kind === 'link' ? linkLabel(item) : snippet(firstLine(item.content), 40) });
       const usable = [
         ...doc.stickies.filter((st) => (st.content || '').trim()).map((st) => ({ kind: 'sticky', item: st })),
         ...doc.files.map((f) => ({ kind: 'file', item: f })),
+        ...doc.links.map((l) => ({ kind: 'link', item: l })),
       ];
       const canvasChips = usable.filter(({ item }) => modeOf(item) === 'canvas').map(({ kind, item }) => ({ ...chipOf(kind, item), scope: 'canvas' }));
       const branchItems = new Map(); // node id -> [{ kind, item }]
@@ -3777,8 +4095,8 @@
         if (!item) return;
         if (item.node_id) uncollapseAbove(item.node_id, false);
         const pos = stickyPosition(item, byId);
-        const w = kind === 'file' ? FILE_W : STICKY_W;
-        centreOn({ x: pos.x + w / 2, y: pos.y + (stickyHeights[id] || (kind === 'file' ? FILE_H : 120)) / 2 });
+        const w = kind === 'sticky' ? STICKY_W : FILE_W;
+        centreOn({ x: pos.x + w / 2, y: pos.y + (stickyHeights[id] || (kind === 'sticky' ? 120 : FILE_H)) / 2 });
       };
       const showNode = (id) => {
         const node = byId.get(id);
@@ -3807,9 +4125,10 @@
       // again when a save finishes), so the reader reloads "What this node sees".
       const contextSig = doc.stickies.map((st) => `${st.id}:${modeOf(st)}:${st.node_id || ''}:${(st.content || '').length}`).join('|')
         + '#' + doc.files.map((f) => `${f.id}:${modeOf(f)}:${f.node_id || ''}`).join('|')
+        + '#' + doc.links.map((l) => `${l.id}:${modeOf(l)}:${l.node_id || ''}:${l.status}:${l.fetched_at || ''}`).join('|')
         + '#' + Object.values(stickySaves).filter((sv) => sv.state === 'saving').length;
       const pickItem = attachPick ? findBubble(attachPick.kind, attachPick.id) : null;
-      const pickName = pickItem ? (attachPick.kind === 'file' ? pickItem.name : snippet(firstLine(pickItem.content) || 'this note', 40)) : '';
+      const pickName = pickItem ? (attachPick.kind === 'file' ? pickItem.name : attachPick.kind === 'link' ? linkLabel(pickItem) : snippet(firstLine(pickItem.content) || 'this note', 40)) : '';
       const showGhost = composer && composer.x !== null && !isEmpty;
       if (showGhost && composerParent && heights[composerParent.id] !== undefined) {
         edges.push(html`<path key="draft" class="draft" d=${curve(composerParent.x + CARD_W / 2, composerParent.y + heights[composerParent.id], composer.x + CARD_W / 2, composer.y)} />`);
@@ -3866,6 +4185,7 @@
             style=${{ display: 'none' }}
             onChange=${(e) => { addFiles(Array.from(e.target.files || []), null); e.target.value = ''; }}
           />
+          <button onClick=${onAddLink} disabled=${!ready || (capture && capture.busy)} title="Save a web page on the canvas with its readable text. You can also paste a web address onto the canvas.">+ Link</button>
           <button onClick=${runTidy} disabled=${!ready || doc.nodes.length === 0 || tidyBusy} title="Rearrange every card into a clean tree and save the positions">Tidy</button>
           <button
             class=${contextOpen ? 'on' : ''}
@@ -3911,16 +4231,17 @@
                 </svg>`}
           </button>
           <span class="zoom" title="Zoom level">${Math.round(view.k * 100)}%</span>
-          <button onClick=${fit} disabled=${!ready || (doc.nodes.length === 0 && doc.stickies.length === 0 && doc.files.length === 0)}>Fit to screen</button>
+          <button onClick=${fit} disabled=${!ready || (doc.nodes.length === 0 && doc.stickies.length === 0 && doc.files.length === 0 && doc.links.length === 0)}>Fit to screen</button>
         </div>
 
         <div
-          class=${'viewport' + (panning ? ' panning' : '') + (readerNode || contextOpen || readerFile ? ' reader-open' : '') + (dropping ? ' dropping' : '')}
+          class=${'viewport' + (panning ? ' panning' : '') + (readerNode || contextOpen || readerFile || readerLink ? ' reader-open' : '') + (dropping ? ' dropping' : '')}
           ref=${viewportRef}
           style=${viewportStyle}
           onDragOver=${onFileDragOver}
           onDragLeave=${onFileDragLeave}
           onDrop=${onFileDrop}
+          onMouseMove=${(e) => { lastPointer.current = { x: e.clientX, y: e.clientY }; }}
           onPointerDownCapture=${onPickDown}
           onClickCapture=${onPickClick}
           onPointerDown=${onPointerDown}
@@ -4007,6 +4328,28 @@
                 onRetrySave=${retryStickySave}
                 ctx=${bubbleCtx(f)}
               />`)}
+            ${placedLinks.map(({ l, x, y }) => html`
+              <${LinkBubble}
+                key=${l.id}
+                link=${l}
+                x=${x}
+                y=${y}
+                isDragging=${draggingFile === l.id}
+                isReading=${fileReaderId === l.id}
+                onPath=${!!l.node_id && activePath.has(l.node_id)}
+                save=${stickySaves[l.id]}
+                removal=${removals[l.id]}
+                onHeight=${onStickyHeight}
+                onDragStart=${onLinkDragStart}
+                onDragMove=${onFileDragMove}
+                onDragEnd=${onFileDragEnd}
+                onAskDelete=${askDeleteSticky}
+                onCancelDelete=${cancelDeleteSticky}
+                onDelete=${deleteLink}
+                onRetrySave=${retryStickySave}
+                onRefresh=${refreshLink}
+                ctx=${bubbleCtx(l)}
+              />`)}
             ${placedUploads.map(({ u, x, y }) => html`
               <${UploadBubble} key=${'upload-' + u.key} upload=${u} x=${x} y=${y} onRetry=${retryUpload} onDismiss=${dismissUpload} />`)}
             ${showGhost && html`<div class="ghost" style=${{ left: composer.x + 'px', top: composer.y + 'px' }}>New node</div>`}
@@ -4014,7 +4357,15 @@
           ${overlay && html`<div class="overlay">${overlay}</div>`}
           ${ready && (attachPick
             ? html`<div class="toast"><span class="msg">Click a card to attach “${pickName}” to it</span><button onClick=${() => setAttachPick(null)}>Cancel</button></div>`
-            : toast)}
+            : capture
+              ? (capture.busy
+                ? html`<div class="toast"><${Spinner} label=${capture.text} /></div>`
+                : html`<div class="toast bad" role="alert">
+                    <span class="msg bad" title=${capture.error}>${capture.error}</span>
+                    <button class="primary" onClick=${capture.retry}>Retry</button>
+                    <button onClick=${() => setCapture(null)}>Dismiss</button>
+                  </div>`)
+              : toast)}
           ${ready && dropping && html`
             <div class="drop-hint">${dropNode ? `Drop to attach to “${snippet(dropNode.prompt, 40)}”` : 'Drop to add files here'}</div>`}
           ${ready && miniBlocks.length > 0 && vpSize.w > 0 && html`
@@ -4035,6 +4386,7 @@
               canvas=${doc.canvas}
               stickies=${doc.stickies}
               files=${doc.files}
+              links=${doc.links}
               nodes=${doc.nodes}
               colours=${colours}
               onSaveInstructions=${saveInstructions}
@@ -4045,6 +4397,8 @@
             />`}
           ${ready && readerFile && html`
             <${FileViewer} key=${readerFile.id} file=${readerFile} onClose=${() => setFileReaderId(null)} />`}
+          ${ready && readerLink && html`
+            <${LinkViewer} key=${readerLink.id} link=${readerLink} onRefresh=${refreshLink} onClose=${() => setFileReaderId(null)} />`}
           ${ready && readerNode && html`
             <${Reader}
               node=${readerNode}

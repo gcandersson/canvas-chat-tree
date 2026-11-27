@@ -1,11 +1,18 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const dns = require('node:dns');
+const http = require('node:http');
+const https = require('node:https');
+const net = require('node:net');
 const path = require('node:path');
+const zlib = require('node:zlib');
 const express = require('express');
 const multer = require('multer');
 const mammoth = require('mammoth');
 const { PDFDocument } = require('pdf-lib');
+const { JSDOM, VirtualConsole } = require('jsdom');
+const { Readability } = require('@mozilla/readability');
 const { Pool } = require('pg');
 const { Anthropic } = require('@anthropic-ai/sdk');
 
@@ -19,6 +26,14 @@ const MAX_PROMPT_CHARS = 20000;
 const MAX_STICKY_CHARS = 10000;
 const MAX_BATCH_POSITIONS = 5000;
 const MAX_INSTRUCTIONS_CHARS = 20000;
+// Link bubbles: how a page is fetched.
+const LINK_MAX_URL_CHARS = 2000;
+const LINK_TIMEOUT_MS = 10000;
+const LINK_MAX_BYTES = 2 * 1024 * 1024;
+const LINK_MAX_REDIRECTS = 3;
+const LINK_MAX_TEXT_CHARS = 20000;
+const LINK_MAX_TITLE_CHARS = 300;
+
 // AI context budget, per request. Whatever does not fit is left out whole and
 // reported with the reason; nothing is cut short.
 const CONTEXT_TEXT_CHARS = 40000;            // notes, text files, Word text
@@ -54,9 +69,12 @@ const INLINE_MIMES = new Set(['application/pdf', 'image/png', 'image/jpeg', 'ima
 const SYSTEM_PROMPT =
   'The user is exploring ideas on a branching canvas, where each exchange is a node and any node ' +
   'can be branched in a new direction. You see only the path of exchanges leading to the current ' +
-  'prompt. Material the user has attached (notes, files, images) appears in the conversation as ' +
-  'labelled blocks such as [Note] or [File: name], placed before the prompt it belongs to; use it ' +
-  'when it is relevant. Answer the latest prompt clearly and concisely. You may use simple Markdown (bold, ' +
+  'prompt. Material the user has attached (notes, files, images, web pages) appears in the conversation as ' +
+  'labelled blocks such as [Note], [File: name] or [Link: title], placed before the prompt it belongs to; use it ' +
+  'when it is relevant. Notes and files can be attached or pinned after earlier replies were ' +
+  'written. If an earlier reply in the path said some material was missing or could not be seen, ' +
+  'that was accurate at the time and is not an error to apologise for; just use the material that ' +
+  'is available now. Answer the latest prompt clearly and concisely. You may use simple Markdown (bold, ' +
   'headings, lists, code) where it helps; do not use tables or images.';
 
 // ---------------------------------------------------------------------------
@@ -158,6 +176,28 @@ const SCHEMA_SQL = `
   -- Page count of a PDF: null = not counted yet, 0 = could not be counted,
   -- -1 = password-protected.
   ALTER TABLE files ADD COLUMN IF NOT EXISTS pages int NULL;
+
+  -- Web pages saved on the canvas, shown as link bubbles. text_content is the
+  -- page's readable text. Position and context work as for files.
+  CREATE TABLE IF NOT EXISTS links (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    canvas_id uuid NOT NULL REFERENCES canvases(id) ON DELETE CASCADE,
+    url text NOT NULL,
+    title text NULL,
+    text_content text NULL,
+    status text NOT NULL DEFAULT 'processing',
+    error text NULL,
+    x real NOT NULL DEFAULT 0,
+    y real NOT NULL DEFAULT 0,
+    node_id uuid NULL REFERENCES nodes(id) ON DELETE SET NULL,
+    context_mode text NOT NULL DEFAULT 'off',
+    fetched_at timestamptz NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+  );
+
+  CREATE INDEX IF NOT EXISTS links_canvas_id_idx ON links(canvas_id);
+  CREATE INDEX IF NOT EXISTS links_node_id_idx ON links(node_id);
 `;
 
 let schemaReady = false;
@@ -187,8 +227,15 @@ async function ensureSchema(attempt = 1) {
       console.warn(`[db] marked ${orphaned.rowCount} orphaned pending node(s) as error.`);
     }
 
+    // Page fetches run in this process too: one still "processing" was cut off.
+    await pool.query(
+      `UPDATE links
+          SET status = 'error', error = 'The server restarted before the page was fetched. Refresh to try again.', updated_at = now()
+        WHERE status = 'processing'`
+    );
+
     schemaReady = true;
-    console.log('[db] schema ready (canvases, nodes, stickies, files).');
+    console.log('[db] schema ready (canvases, nodes, stickies, files, links).');
   } catch (err) {
     const delayMs = Math.min(30000, 1000 * 2 ** Math.min(attempt, 5));
     console.error(`[db] schema creation failed (attempt ${attempt}): ${err.message}. Retrying in ${delayMs / 1000}s.`);
@@ -295,7 +342,7 @@ async function planContext(nodeId) {
   );
   const canvasId = canvas.rows[0].id;
 
-  const [stickies, files] = await Promise.all([
+  const [stickies, files, links] = await Promise.all([
     pool.query(
       `SELECT id, content, node_id, context_mode, created_at
          FROM stickies
@@ -307,6 +354,14 @@ async function planContext(nodeId) {
       `SELECT id, name, mime, size, status, error, pages, node_id, context_mode, created_at,
               char_length(text_content) AS text_chars
          FROM files
+        WHERE canvas_id = $1
+          AND (context_mode = 'canvas' OR (context_mode = 'branch' AND node_id = ANY($2::uuid[])))`,
+      [canvasId, pathIds]
+    ),
+    pool.query(
+      `SELECT id, url, title, status, error, node_id, context_mode, created_at,
+              char_length(text_content) AS text_chars
+         FROM links
         WHERE canvas_id = $1
           AND (context_mode = 'canvas' OR (context_mode = 'branch' AND node_id = ANY($2::uuid[])))`,
       [canvasId, pathIds]
@@ -330,6 +385,9 @@ async function planContext(nodeId) {
       type: 'file', id: f.id, kind: kindOfMime(f.mime), name: f.name, mime: f.mime,
       chars: f.text_chars || 0, bytes: f.size, pages: f.pages, row: f,
     })),
+    ...links.rows.map((l) => ({
+      type: 'link', id: l.id, kind: 'text', name: l.title || l.url, chars: l.text_chars || 0, row: l,
+    })),
   ];
   // Newest first inside each group.
   const newestFirst = (x, y) => (x.row.created_at > y.row.created_at ? -1 : x.row.created_at < y.row.created_at ? 1 : x.id > y.id ? -1 : 1);
@@ -352,6 +410,11 @@ async function planContext(nodeId) {
     item.reason = null;
     if (item.type === 'file' && item.row.status === 'error') {
       leave(item, 'error', item.row.error || 'This file could not be read.');
+    } else if (item.type === 'link' && item.row.status === 'processing') {
+      leave(item, 'error', 'The page is still being fetched.');
+    } else if (item.type === 'link' && item.chars === 0) {
+      // A failed refresh keeps the text fetched before, so only a link with no text at all is left out.
+      leave(item, item.row.status === 'error' ? 'error' : 'empty', item.row.status === 'error' ? (item.row.error || 'The page could not be fetched.') : 'No readable text was found on the page.');
     } else if (item.kind === 'text') {
       if (item.chars === 0) leave(item, 'empty', item.type === 'note' ? 'The note is empty.' : 'The file has no text.');
       else if (used.chars + item.chars > CONTEXT_TEXT_CHARS) {
@@ -397,6 +460,13 @@ async function blocksFor(items) {
   for (const item of sorted) {
     if (item.type === 'note') {
       blocks.push({ type: 'text', text: `[Note]\n${item.row.content.trim()}` });
+      continue;
+    }
+    if (item.type === 'link') {
+      const { rows } = await pool.query('SELECT url, title, text_content FROM links WHERE id = $1', [item.id]);
+      if (rows.length > 0 && rows[0].text_content) {
+        blocks.push({ type: 'text', text: `[Link: ${rows[0].title || rows[0].url}]\nSource: ${rows[0].url}\n\n${rows[0].text_content}` });
+      }
       continue;
     }
     if (item.kind === 'text') {
@@ -626,6 +696,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // --- API helpers -----------------------------------------------------------
 
+// What the page gets for a link: everything except the page text.
+const LINK_COLUMNS = 'id, canvas_id, url, title, status, error, x, y, node_id, context_mode, fetched_at, created_at, updated_at, COALESCE(char_length(text_content), 0) AS text_chars';
+
 // What the page gets for a file: everything except the bytes and the extracted text.
 const FILE_COLUMNS = 'id, canvas_id, name, mime, size, status, error, x, y, node_id, context_mode, created_at, updated_at';
 
@@ -698,13 +771,14 @@ app.get('/api/canvases/:id', async (req, res) => {
   const id = requireUuid(req.params.id, 'Canvas id');
   const canvas = await pool.query('SELECT id, title, created_at, instructions FROM canvases WHERE id = $1', [id]);
   if (canvas.rowCount === 0) throw new HttpError(404, 'Canvas not found.');
-  const [nodes, stickies, files] = await Promise.all([
+  const [nodes, stickies, files, links] = await Promise.all([
     pool.query('SELECT * FROM nodes WHERE canvas_id = $1 ORDER BY created_at ASC, id ASC', [id]),
     pool.query('SELECT * FROM stickies WHERE canvas_id = $1 ORDER BY created_at ASC, id ASC', [id]),
     // Metadata only: never the bytes or the extracted text.
     pool.query(`SELECT ${FILE_COLUMNS} FROM files WHERE canvas_id = $1 ORDER BY created_at ASC, id ASC`, [id]),
+    pool.query(`SELECT ${LINK_COLUMNS} FROM links WHERE canvas_id = $1 ORDER BY created_at ASC, id ASC`, [id]),
   ]);
-  res.json({ canvas: canvas.rows[0], nodes: nodes.rows, stickies: stickies.rows, files: files.rows });
+  res.json({ canvas: canvas.rows[0], nodes: nodes.rows, stickies: stickies.rows, files: files.rows, links: links.rows });
 });
 
 // Save the canvas instructions. Body: { instructions: string | null }.
@@ -1246,6 +1320,349 @@ app.delete('/api/files/:id', async (req, res) => {
   const id = requireUuid(req.params.id, 'File id');
   const { rowCount } = await pool.query('DELETE FROM files WHERE id = $1', [id]);
   if (rowCount === 0) throw new HttpError(404, 'File not found.');
+  res.json({ ok: true, id });
+});
+
+// --- Links -----------------------------------------------------------------
+
+// Addresses a page fetch must never reach: this machine, private networks,
+// link-local (which includes cloud metadata at 169.254.169.254) and other
+// ranges that are not the public internet.
+const blockedAddresses = new net.BlockList();
+for (const [prefix, bits] of [
+  ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16],
+  ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['224.0.0.0', 4], ['240.0.0.0', 4],
+]) blockedAddresses.addSubnet(prefix, bits, 'ipv4');
+for (const [prefix, bits] of [
+  ['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8], ['64:ff9b::', 96],
+]) blockedAddresses.addSubnet(prefix, bits, 'ipv6');
+
+function isBlockedAddress(address) {
+  const family = net.isIP(address);
+  if (family === 4) return blockedAddresses.check(address, 'ipv4');
+  if (family === 6) {
+    // An IPv4 address written as IPv6 (::ffff:127.0.0.1) is judged as IPv4.
+    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address);
+    if (mapped) return blockedAddresses.check(mapped[1], 'ipv4');
+    const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(address);
+    if (hex) {
+      const a = parseInt(hex[1], 16);
+      const b = parseInt(hex[2], 16);
+      return blockedAddresses.check(`${a >> 8}.${a & 255}.${b >> 8}.${b & 255}`, 'ipv4');
+    }
+    return blockedAddresses.check(address, 'ipv6');
+  }
+  return true; // not an IP address at all
+}
+
+class LinkError extends Error {}
+const PRIVATE_ADDRESS = 'This address is not allowed: it points to this server or a private network.';
+
+// Only http and https, no credentials in the URL.
+function parseLinkUrl(value) {
+  if (typeof value !== 'string' || !value.trim()) throw new LinkError('url is required.');
+  if (value.length > LINK_MAX_URL_CHARS) throw new LinkError(`The link is too long (max ${LINK_MAX_URL_CHARS} characters).`);
+  let url;
+  try { url = new URL(value.trim()); } catch { throw new LinkError('That is not a valid web address.'); }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new LinkError('Only http and https links can be saved.');
+  if (url.username || url.password) throw new LinkError('Links with a username or password in them are not allowed.');
+  url.hash = '';
+  return url;
+}
+
+const bareHost = (url) => url.hostname.replace(/^\[|\]$/g, '');
+
+// Resolve the host and refuse it if any of its addresses is blocked.
+async function assertPublicHost(url) {
+  const host = bareHost(url);
+  if (net.isIP(host)) {
+    if (isBlockedAddress(host)) throw new LinkError(PRIVATE_ADDRESS);
+    return;
+  }
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.internal') || host.endsWith('.local')) {
+    throw new LinkError(PRIVATE_ADDRESS);
+  }
+  let addresses;
+  try {
+    addresses = await dns.promises.lookup(host, { all: true });
+  } catch {
+    throw new LinkError(`The address ${host} could not be found.`);
+  }
+  if (addresses.length === 0 || addresses.some((a) => isBlockedAddress(a.address))) throw new LinkError(PRIVATE_ADDRESS);
+}
+
+// The lookup used for the connection itself. The check above is repeated
+// here, on the very addresses the socket will connect to, so a name that
+// answers differently the second time (DNS rebinding) is still refused.
+function guardedLookup(hostname, options, callback) {
+  dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
+    if (err) return callback(err);
+    if (addresses.length === 0 || addresses.some((a) => isBlockedAddress(a.address))) {
+      return callback(new LinkError(PRIVATE_ADDRESS));
+    }
+    if (options && options.all) return callback(null, addresses);
+    callback(null, addresses[0].address, addresses[0].family);
+  });
+}
+
+// One request, no redirects followed. Resolves { status, headers, body }.
+function requestOnce(url, deadline) {
+  return new Promise((resolve, reject) => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return reject(new LinkError('The page took too long to answer (10 seconds).'));
+    const lib = url.protocol === 'https:' ? https : http;
+    let settled = false;
+    const finish = (fn, value) => { if (!settled) { settled = true; clearTimeout(timer); fn(value); } };
+    const req = lib.request(url, {
+      method: 'GET',
+      lookup: guardedLookup,
+      headers: {
+        'User-Agent': 'canvas-chat-tree link reader',
+        Accept: 'text/html, text/plain;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept-Language': 'en;q=0.9, *;q=0.5',
+      },
+    }, (res) => {
+      const status = res.statusCode || 0;
+      if (status >= 300 && status < 400) {
+        res.resume();
+        return finish(resolve, { status, headers: res.headers, body: null });
+      }
+      if (status < 200 || status >= 300) {
+        res.resume();
+        return finish(reject, new LinkError(`The page answered with an error (${status}).`));
+      }
+      const type = String(res.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+      if (type !== 'text/html' && type !== 'text/plain') {
+        req.destroy();
+        return finish(reject, new LinkError(`Only web pages and plain text can be saved as a link${type ? ` (this is ${type})` : ''}.`));
+      }
+      const encoding = String(res.headers['content-encoding'] || '').toLowerCase();
+      let stream = res;
+      if (encoding === 'gzip' || encoding === 'x-gzip') stream = res.pipe(zlib.createGunzip());
+      else if (encoding === 'deflate') stream = res.pipe(zlib.createInflate());
+      else if (encoding === 'br') stream = res.pipe(zlib.createBrotliDecompress());
+      const chunks = [];
+      let size = 0;
+      stream.on('data', (chunk) => {
+        size += chunk.length;
+        if (size > LINK_MAX_BYTES) {
+          req.destroy();
+          return finish(reject, new LinkError('The page is too large (max 2 MB).'));
+        }
+        chunks.push(chunk);
+      });
+      stream.on('end', () => finish(resolve, { status, headers: res.headers, body: Buffer.concat(chunks), type }));
+      stream.on('error', () => finish(reject, new LinkError('The page could not be read.')));
+    });
+    const timer = setTimeout(() => {
+      req.destroy();
+      finish(reject, new LinkError('The page took too long to answer (10 seconds).'));
+    }, remaining);
+    req.on('error', (err) => {
+      finish(reject, err instanceof LinkError ? err : new LinkError(`The page could not be reached${err.code ? ` (${err.code})` : ''}.`));
+    });
+    req.end();
+  });
+}
+
+// Fetch a page safely: every hop is checked, at most 3 redirects, 10 seconds
+// and 2 MB in total, only text/html and text/plain.
+async function fetchPage(startUrl) {
+  const deadline = Date.now() + LINK_TIMEOUT_MS;
+  let url = startUrl;
+  for (let hop = 0; hop <= LINK_MAX_REDIRECTS; hop++) {
+    await assertPublicHost(url);
+    const res = await requestOnce(url, deadline);
+    if (res.body) return { url, body: res.body, type: res.type, contentType: String(res.headers['content-type'] || '') };
+    const location = res.headers.location;
+    if (!location) throw new LinkError('The page redirected without saying where to.');
+    let next;
+    try { next = new URL(location, url); } catch { throw new LinkError('The page redirected to an address that is not valid.'); }
+    url = parseLinkUrl(next.href);
+  }
+  throw new LinkError(`The page redirected too many times (max ${LINK_MAX_REDIRECTS}).`);
+}
+
+const tidyText = (text) => text.replace(/\u0000/g, '').replace(/[ \t ]+/g, ' ').replace(/ ?\n ?/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+
+// Title and main readable text of a fetched page, capped at 20,000 characters.
+// Scripts on the page are never run and nothing else is loaded.
+function readPage(page) {
+  if (page.type === 'text/plain') {
+    const text = tidyText(new TextDecoder('utf-8').decode(page.body));
+    return { title: null, text: text.slice(0, LINK_MAX_TEXT_CHARS) };
+  }
+  const dom = new JSDOM(page.body, { url: page.url.href, contentType: page.contentType || 'text/html', virtualConsole: new VirtualConsole() });
+  try {
+    const document = dom.window.document;
+    const pageTitle = (document.title || '').trim();
+    const blockText = (root) => {
+      // textContent runs paragraphs together, so put a break after each block first.
+      for (const el of root.querySelectorAll('p, br, li, h1, h2, h3, h4, h5, h6, tr, blockquote, pre, div')) {
+        el.appendChild(document.createTextNode('\n\n'));
+      }
+      return tidyText(root.textContent || '');
+    };
+    let title = pageTitle;
+    let text = '';
+    try {
+      const article = new Readability(document.cloneNode(true)).parse();
+      if (article && article.content) {
+        const holder = document.createElement('div');
+        holder.innerHTML = article.content;
+        text = blockText(holder);
+        if (article.title) title = article.title.trim();
+      }
+    } catch { /* fall back to the plain text of the page */ }
+    if (!text && document.body) {
+      for (const el of document.body.querySelectorAll('script, style, noscript, template, svg, nav, header, footer')) el.remove();
+      text = blockText(document.body);
+    }
+    return { title: title ? title.slice(0, LINK_MAX_TITLE_CHARS) : null, text: text.slice(0, LINK_MAX_TEXT_CHARS) };
+  } finally {
+    dom.window.close();
+  }
+}
+
+// Fetch and store one link's page. Never throws: the outcome goes to the row.
+// A failed refresh keeps the title and text fetched before.
+async function fetchLink(id) {
+  try {
+    const { rows } = await pool.query('SELECT url FROM links WHERE id = $1', [id]);
+    if (rows.length === 0) return;
+    const page = await fetchPage(parseLinkUrl(rows[0].url));
+    const { title, text } = readPage(page);
+    await pool.query(
+      `UPDATE links
+          SET status = 'ready', error = NULL, title = $2, text_content = $3, fetched_at = now(), updated_at = now()
+        WHERE id = $1`,
+      [id, title, text]
+    );
+  } catch (err) {
+    const message = err instanceof LinkError ? err.message : 'The page could not be read.';
+    if (!(err instanceof LinkError)) console.error(`[links] link ${id} failed:`, err);
+    await pool
+      .query(`UPDATE links SET status = 'error', error = $2, updated_at = now() WHERE id = $1`, [id, message])
+      .catch((dbErr) => console.error(`[links] could not record the error for link ${id}: ${dbErr.message}`));
+  }
+}
+
+// Save a link. Body: { url, x?, y?, node_id? }. Returns it as "processing" at
+// once; the page is fetched in the background. An address that is not allowed
+// is refused here, before anything is saved.
+app.post('/api/canvases/:id/links', async (req, res) => {
+  const canvasId = requireUuid(req.params.id, 'Canvas id');
+  const body = req.body || {};
+  let url;
+  try {
+    url = parseLinkUrl(body.url);
+    await assertPublicHost(url);
+  } catch (err) {
+    if (err instanceof LinkError) throw new HttpError(400, err.message);
+    throw err;
+  }
+  const x = readCoord(body.x, 'x', { required: false });
+  const y = readCoord(body.y, 'y', { required: false });
+  const nodeId = body.node_id === undefined || body.node_id === null ? null : requireUuid(body.node_id, 'node_id');
+
+  const canvas = await pool.query('SELECT id FROM canvases WHERE id = $1', [canvasId]);
+  if (canvas.rowCount === 0) throw new HttpError(404, 'Canvas not found.');
+  if (nodeId) await requireNodeOnCanvas(nodeId, canvasId);
+
+  const { rows } = await pool.query(
+    `INSERT INTO links (canvas_id, url, x, y, node_id) VALUES ($1, $2, $3, $4, $5) RETURNING ${LINK_COLUMNS}`,
+    [canvasId, url.href, x, y, nodeId]
+  );
+  res.status(201).json(rows[0]);
+  fetchLink(rows[0].id);
+});
+
+app.get('/api/links/:id', async (req, res) => {
+  const id = requireUuid(req.params.id, 'Link id');
+  const { rows } = await pool.query(`SELECT ${LINK_COLUMNS} FROM links WHERE id = $1`, [id]);
+  if (rows.length === 0) throw new HttpError(404, 'Link not found.');
+  res.json(rows[0]);
+});
+
+// The page's readable text, loaded on demand for the bubble preview and the reader.
+app.get('/api/links/:id/text', async (req, res) => {
+  const id = requireUuid(req.params.id, 'Link id');
+  let limit = LINK_MAX_TEXT_CHARS;
+  if (req.query.limit !== undefined) {
+    const n = Number(req.query.limit);
+    if (!Number.isInteger(n) || n < 1) throw new HttpError(400, 'limit must be a positive whole number.');
+    limit = Math.min(n, LINK_MAX_TEXT_CHARS);
+  }
+  const { rows } = await pool.query(
+    `SELECT left(COALESCE(text_content, ''), $2) AS text, COALESCE(char_length(text_content), 0) AS total FROM links WHERE id = $1`,
+    [id, limit]
+  );
+  if (rows.length === 0) throw new HttpError(404, 'Link not found.');
+  res.json({ text: rows[0].text, total: rows[0].total, truncated: rows[0].total > rows[0].text.length });
+});
+
+// Fetch the page again.
+app.post('/api/links/:id/refresh', async (req, res) => {
+  const id = requireUuid(req.params.id, 'Link id');
+  const { rows } = await pool.query(
+    `UPDATE links SET status = 'processing', error = NULL, updated_at = now()
+      WHERE id = $1 AND status <> 'processing'
+      RETURNING ${LINK_COLUMNS}`,
+    [id]
+  );
+  if (rows.length === 0) {
+    const existing = await pool.query('SELECT status FROM links WHERE id = $1', [id]);
+    if (existing.rowCount === 0) throw new HttpError(404, 'Link not found.');
+    throw new HttpError(409, 'This page is already being fetched.');
+  }
+  res.json(rows[0]);
+  fetchLink(id);
+});
+
+// Partial update: x, y, node_id, context_mode.
+app.patch('/api/links/:id', async (req, res) => {
+  const id = requireUuid(req.params.id, 'Link id');
+  const body = req.body || {};
+  const existing = await pool.query('SELECT canvas_id, node_id, context_mode FROM links WHERE id = $1', [id]);
+  if (existing.rowCount === 0) throw new HttpError(404, 'Link not found.');
+  const current = existing.rows[0];
+
+  const sets = [];
+  const values = [id];
+  const set = (column, value) => { values.push(value); sets.push(`${column} = $${values.length}`); };
+
+  if (body.x !== undefined) set('x', readCoord(body.x, 'x', { required: true }));
+  if (body.y !== undefined) set('y', readCoord(body.y, 'y', { required: true }));
+  let nodeId = current.node_id;
+  if (body.node_id !== undefined) {
+    nodeId = body.node_id === null ? null : requireUuid(body.node_id, 'node_id');
+    if (nodeId) await requireNodeOnCanvas(nodeId, current.canvas_id);
+    set('node_id', nodeId);
+  }
+  if (body.context_mode !== undefined) {
+    if (!CONTEXT_MODES.includes(body.context_mode)) {
+      throw new HttpError(400, `context_mode must be one of: ${CONTEXT_MODES.join(', ')}.`);
+    }
+    if (body.context_mode === 'branch' && !nodeId) throw new HttpError(400, 'context_mode "branch" needs the link to be attached to a node.');
+    set('context_mode', body.context_mode);
+  } else if (current.context_mode === 'branch' && !nodeId) {
+    set('context_mode', 'off'); // detached: there is no branch left to scope to
+  }
+  if (sets.length === 0) throw new HttpError(400, 'Nothing to update.');
+
+  const { rows } = await pool.query(
+    `UPDATE links SET ${sets.join(', ')}, updated_at = now() WHERE id = $1 RETURNING ${LINK_COLUMNS}`,
+    values
+  );
+  if (rows.length === 0) throw new HttpError(404, 'Link not found.');
+  res.json(rows[0]);
+});
+
+app.delete('/api/links/:id', async (req, res) => {
+  const id = requireUuid(req.params.id, 'Link id');
+  const { rowCount } = await pool.query('DELETE FROM links WHERE id = $1', [id]);
+  if (rowCount === 0) throw new HttpError(404, 'Link not found.');
   res.json({ ok: true, id });
 });
 
